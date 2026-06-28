@@ -6,4 +6,5 @@ export interface CurrentUser {
   nickname: string | null;
   isPlatformAdmin: boolean;
   isTenantAdmin: boolean;
+  mustChangePassword: boolean;
 }

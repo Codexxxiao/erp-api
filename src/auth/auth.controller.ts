@@ -5,6 +5,8 @@ import { LoginDto } from './dto/login.dto';
 import { JwtAuthGuard } from './jwt/jwt.guard';
 import { CurrentUserDecorator } from '../common/decorators/current-user.decorator';
 import type { CurrentUser } from '../common/types/current-user';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -24,5 +26,23 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   me(@CurrentUserDecorator() user: CurrentUser) {
     return user;
+  }
+
+  @Post('refresh')
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.auth.refresh(dto.refreshToken);
+  }
+  @Post('logout')
+  logout(@Body() dto: RefreshTokenDto) {
+    return this.auth.logout(dto.refreshToken);
+  }
+
+  @Post('change-password')
+  @UseGuards(JwtAuthGuard)
+  changePassword(
+    @CurrentUserDecorator() user: CurrentUser,
+    @Body() dto: ChangePasswordDto,
+  ) {
+    return this.auth.changePassword(user, dto.oldPassword, dto.newPassword);
   }
 }

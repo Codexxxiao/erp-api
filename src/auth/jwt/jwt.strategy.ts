@@ -45,6 +45,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       nickname: user.nickname,
       isPlatformAdmin: user.isPlatformAdmin,
       isTenantAdmin: user.isTenantAdmin,
+      mustChangePassword: user.mustChangePassword,
     };
   }
 }

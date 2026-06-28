@@ -23,6 +23,7 @@ model Tenant {
   updatedAt DateTime     @updatedAt
 
   users User[]
+  invites UserInvite[]
 }
 
 model User {
@@ -35,11 +36,13 @@ model User {
   isPlatformAdmin Boolean  @default(false)
   isTenantAdmin   Boolean  @default(false)
   isActive        Boolean  @default(true)
+  mustChangePassword Boolean @default(false)  // 新增：首次登录强制改密
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-
-  tenant Tenant? @relation(fields: [tenantId], references: [id])
-
+  tenant         Tenant?        @relation(fields: [tenantId], references: [id])
+  refreshTokens  RefreshToken[]
+  invitesSent    UserInvite[]   @relation("InviteCreator")
+  invitesAccepted UserInvite[]  @relation("InviteAcceptor")
   @@unique([tenantId, username])
   @@index([tenantId])
 }
@@ -56,4 +59,33 @@ model AuditLog {
 
   @@index([tenantId])
   @@index([userId])
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+
+model UserInvite {
+  id           String    @id @default(uuid())
+  tenantId     String
+  username     String
+  nickname     String?
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  acceptedAt   DateTime?
+  acceptedById String?
+  invitedById  String
+  createdAt    DateTime  @default(now())
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invitedBy  User   @relation("InviteCreator", fields: [invitedById], references: [id])
+  acceptedBy User?  @relation("InviteAcceptor", fields: [acceptedById], references: [id])
+  @@unique([tenantId, username])
+  @@index([tenantId])
 }

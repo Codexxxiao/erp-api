@@ -3,9 +3,12 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Tenant, TenantStatus, User } from '../generated/prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { createHash, randomBytes } from 'crypto';
+import type { CurrentUser } from '../common/types/current-user';
 import { PrismaService } from '../prisma/prisma.service';
 import { BootstrapPlatformAdminDto } from './dto/bootstrap-platform-admin.dto';
 import { LoginDto } from './dto/login.dto';
@@ -17,7 +20,123 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
+    private readonly config: ConfigService,
   ) {}
+
+  private hashToken(raw: string) {
+    return createHash('sha256').update(raw).digest('hex');
+  }
+
+  private getRefreshExpiresDays() {
+    return Number(this.config.get<string>('REFRESH_TOKEN_DAYS') ?? 30);
+  }
+
+  private toPublicUser(user: UserWithTenant) {
+    return {
+      id: user.id,
+      tenantId: user.tenantId,
+      tenantCode: user.tenant?.code ?? null,
+      username: user.username,
+      nickname: user.nickname,
+      isPlatformAdmin: user.isPlatformAdmin,
+      isTenantAdmin: user.isTenantAdmin,
+      mustChangePassword: user.mustChangePassword,
+    };
+  }
+
+  private assertUserTenantActive(user: UserWithTenant) {
+    if (user.tenant?.status === TenantStatus.DISABLED) {
+      throw new ForbiddenException('租户已停用');
+    }
+  }
+
+  private async issueTokenPair(user: UserWithTenant) {
+    const accessToken = this.jwt.sign({
+      sub: user.id,
+      tenantId: user.tenantId,
+      tenantCode: user.tenant?.code ?? null,
+      username: user.username,
+    });
+    const rawRefresh = randomBytes(48).toString('hex');
+    const refreshExpiresDays = this.getRefreshExpiresDays();
+
+    await this.prisma.refreshToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: this.hashToken(rawRefresh),
+        expiresAt: new Date(Date.now() + refreshExpiresDays * 86400000),
+      },
+    });
+
+    return {
+      accessToken,
+      refreshToken: rawRefresh,
+      user: this.toPublicUser(user),
+    };
+  }
+
+  async refresh(refreshToken: string) {
+    const tokenHash = this.hashToken(refreshToken);
+    const row = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash },
+      include: { user: { include: { tenant: true } } },
+    });
+
+    if (!row || row.revokedAt || row.expiresAt < new Date()) {
+      throw new UnauthorizedException('Refresh token 无效');
+    }
+    if (!row.user.isActive) {
+      throw new UnauthorizedException('用户已停用');
+    }
+
+    this.assertUserTenantActive(row.user);
+
+    await this.prisma.refreshToken.update({
+      where: { id: row.id },
+      data: { revokedAt: new Date() },
+    });
+
+    return this.issueTokenPair(row.user);
+  }
+
+  async logout(refreshToken: string) {
+    const tokenHash = this.hashToken(refreshToken);
+    await this.prisma.refreshToken.updateMany({
+      where: { tokenHash, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { ok: true };
+  }
+
+  async changePassword(
+    currentUser: CurrentUser,
+    oldPassword: string,
+    newPassword: string,
+  ) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: currentUser.id },
+    });
+    if (!user) throw new UnauthorizedException();
+
+    const ok = await bcrypt.compare(oldPassword, user.passwordHash);
+    if (!ok) throw new UnauthorizedException('原密码错误');
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash: await bcrypt.hash(newPassword, 10),
+          mustChangePassword: false,
+        },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
+
+    return { ok: true };
+  }
 
   async bootstrapPlatformAdmin(dto: BootstrapPlatformAdminDto) {
     const exists = await this.prisma.user.count({
@@ -44,7 +163,7 @@ export class AuthService {
       include: { tenant: true },
     });
 
-    return this.buildLoginResult(user);
+    return this.issueTokenPair(user);
   }
 
   async login(dto: LoginDto) {
@@ -86,29 +205,7 @@ export class AuthService {
       throw new UnauthorizedException('账号或密码错误');
     }
 
-    return this.buildLoginResult(user);
-  }
-
-  private buildLoginResult(user: UserWithTenant) {
-    const payload = {
-      sub: user.id,
-      tenantId: user.tenantId,
-      tenantCode: user.tenant?.code ?? null,
-      username: user.username,
-    };
-
-    return {
-      accessToken: this.jwt.sign(payload),
-      user: {
-        id: user.id,
-        tenantId: user.tenantId,
-        tenantCode: user.tenant?.code ?? null,
-        username: user.username,
-        nickname: user.nickname,
-        isPlatformAdmin: user.isPlatformAdmin,
-        isTenantAdmin: user.isTenantAdmin,
-      },
-    };
+    return this.issueTokenPair(user);
   }
 
   private normalize(value: string) {
