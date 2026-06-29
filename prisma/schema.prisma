@@ -24,6 +24,8 @@ model Tenant {
 
   users User[]
   invites UserInvite[]
+  roles Role[]
+  menus Menu[]
 }
 
 model User {
@@ -45,6 +47,8 @@ model User {
   invitesAccepted UserInvite[]  @relation("InviteAcceptor")
   @@unique([tenantId, username])
   @@index([tenantId])
+
+  userRoles UserRole[]
 }
 
 model AuditLog {
@@ -88,4 +92,105 @@ model UserInvite {
   acceptedBy User?  @relation("InviteAcceptor", fields: [acceptedById], references: [id])
   @@unique([tenantId, username])
   @@index([tenantId])
+}
+
+
+enum PermissionType {
+  API
+  MENU
+  BUTTON
+  DATA
+}
+
+enum MenuType {
+  DIRECTORY
+  PAGE
+  BUTTON
+}
+
+model Permission {
+  id          String         @id @default(uuid())
+  code        String         @unique
+  name        String
+  module      String?
+  type        PermissionType @default(API)
+  description String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  rolePermissions RolePermission[]
+  menus           Menu[]
+}
+
+model Role {
+  id          String   @id @default(uuid())
+  tenantId    String
+  code        String
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rolePermissions RolePermission[]
+  userRoles       UserRole[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model UserRole {
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model Menu {
+  id             String   @id @default(uuid())
+  tenantId       String
+  parentId       String?
+  type           MenuType @default(PAGE)
+  title          String
+  name           String
+  path           String?
+  component      String?
+  redirect       String?
+  icon           String?
+  sort           Int      @default(0)
+  permissionCode String?
+  isVisible      Boolean  @default(true)
+  isEnabled      Boolean  @default(true)
+  meta           Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  parent     Menu?       @relation("MenuTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children   Menu[]      @relation("MenuTree")
+  permission Permission? @relation(fields: [permissionCode], references: [code])
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([parentId])
+  @@index([permissionCode])
 }
