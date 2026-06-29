@@ -27,6 +27,7 @@ model Tenant {
   roles Role[]
   menus Menu[]
   dictionaries Dictionary[]
+  dataSources DataSource[]
 }
 
 model User {
@@ -237,4 +238,64 @@ model DictionaryItem {
   @@unique([dictionaryId, value])
   @@index([dictionaryId])
   @@index([parentId])
+}
+
+
+enum DataSourceType {
+  STATIC
+  DICTIONARY
+  INTERNAL
+  HTTP
+}
+
+enum DataSourceFieldType {
+  STRING
+  NUMBER
+  BOOLEAN
+  DATE
+  DATETIME
+  JSON
+}
+
+model DataSource {
+  id          String         @id @default(uuid())
+  tenantId    String?
+  scopeKey    String
+  code        String
+  name        String
+  type        DataSourceType
+  description String?
+  config      Json
+  sort        Int            @default(0)
+  isActive    Boolean        @default(true)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  tenant Tenant?           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  fields DataSourceField[]
+
+  @@unique([scopeKey, code])
+  @@index([tenantId])
+  @@index([scopeKey])
+  @@index([code])
+}
+
+model DataSourceField {
+  id           String              @id @default(uuid())
+  dataSourceId String
+  key          String
+  label        String
+  path         String
+  type         DataSourceFieldType @default(STRING)
+  isValue      Boolean             @default(false)
+  isLabel      Boolean             @default(false)
+  isExtra      Boolean             @default(true)
+  sort         Int                 @default(0)
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  dataSource DataSource @relation(fields: [dataSourceId], references: [id], onDelete: Cascade)
+
+  @@unique([dataSourceId, key])
+  @@index([dataSourceId])
 }
