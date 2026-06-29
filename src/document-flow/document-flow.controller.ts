@@ -12,7 +12,7 @@ import { TenantAdminGuard } from '../common/guards/tenant-admin.guard';
 import { TenantMemberGuard } from '../common/guards/tenant-member.guard';
 import { MustChangePasswordGuard } from '../common/guards/must-change-password.guard';
 import { CurrentUserDecorator } from '../common/decorators/current-user.decorator';
-import { CurrentUser } from '../common/types/current-user.type';
+import type { CurrentUser } from '../common/types/current-user';
 import { CreateDocumentFlowDto } from './dto/create-document-flow.dto';
 import { UpdateDocumentFlowDto } from './dto/update-document-flow.dto';
 import { ExecuteDocumentFlowDto } from './dto/execute-document-flow.dto';
@@ -79,5 +79,29 @@ export class DocumentFlowController {
     @Param('id') id: string,
   ) {
     return this.documentFlowService.findExecutions(user, id);
+  }
+
+  @Get('links/source/:recordId')
+  findTargetsBySource(
+    @CurrentUserDecorator() user: CurrentUser,
+    @Param('recordId') recordId: string,
+  ) {
+    return this.documentFlowService.findTargetsBySource(user, recordId);
+  }
+
+  @Get('links/target/:recordId')
+  findSourcesByTarget(
+    @CurrentUserDecorator() user: CurrentUser,
+    @Param('recordId') recordId: string,
+  ) {
+    return this.documentFlowService.findSourcesByTarget(user, recordId);
+  }
+
+  @Get(':id/links')
+  findLinksByFlow(
+    @CurrentUserDecorator() user: CurrentUser,
+    @Param('id') id: string,
+  ) {
+    return this.documentFlowService.findLinksByFlow(user, id);
   }
 }

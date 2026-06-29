@@ -529,6 +529,18 @@ enum DocumentFlowExecutionStatus {
   FAILED
 }
 
+enum DocumentFlowRepeatPolicy {
+  BLOCK
+  ALLOW
+}
+
+enum DocumentFlowLinkStatus {
+  RESERVED
+  SUCCESS
+  FAILED
+  CANCELED
+}
+
 model DocumentFlow {
   id           String                @id @default(uuid())
   tenantId     String
@@ -538,6 +550,7 @@ model DocumentFlow {
   sourceFormId String
   targetFormId String
   status       DocumentFlowStatus    @default(DRAFT)
+  repeatPolicy DocumentFlowRepeatPolicy @default(BLOCK)
   description  String?
   config       Json?
   createdAt    DateTime              @default(now())
@@ -545,11 +558,39 @@ model DocumentFlow {
 
   mappings   DocumentFlowMapping[]
   executions DocumentFlowExecution[]
+  links      DocumentFlowLink[]
 
   @@unique([tenantId, code])
   @@index([tenantId])
   @@index([sourceFormId])
   @@index([targetFormId])
+}
+
+model DocumentFlowLink {
+  id             String                 @id @default(uuid())
+  tenantId       String
+  flowId         String
+  sourceFormId   String
+  sourceRecordId String
+  sourceRecordNo String?
+  targetFormId   String
+  targetRecordId String?
+  targetRecordNo String?
+  status         DocumentFlowLinkStatus @default(RESERVED)
+  dedupKey       String?
+  errorMessage   String?
+  createdById    String
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+
+  flow       DocumentFlow            @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  executions DocumentFlowExecution[]
+
+  @@unique([tenantId, flowId, dedupKey])
+  @@index([tenantId])
+  @@index([flowId])
+  @@index([sourceRecordId])
+  @@index([targetRecordId])
 }
 
 model DocumentFlowMapping {
@@ -576,6 +617,7 @@ model DocumentFlowExecution {
   id             String                      @id @default(uuid())
   tenantId       String
   flowId         String
+  linkId         String?
   sourceFormId   String
   targetFormId   String
   sourceRecordId String
@@ -586,10 +628,12 @@ model DocumentFlowExecution {
   createdById    String
   createdAt      DateTime                    @default(now())
 
-  flow DocumentFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  flow DocumentFlow      @relation(fields: [flowId], references: [id], onDelete: Cascade)
+  link DocumentFlowLink? @relation(fields: [linkId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([flowId])
+  @@index([linkId])
   @@index([sourceRecordId])
   @@index([targetRecordId])
 }

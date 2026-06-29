@@ -11,6 +11,7 @@ import {
 import {
   DocumentFlowDirection,
   DocumentFlowMappingType,
+  DocumentFlowRepeatPolicy,
 } from '../../generated/prisma/client';
 
 export class CreateDocumentFlowMappingDto {
@@ -65,6 +66,10 @@ export class CreateDocumentFlowDto {
 
   @IsOptional()
   config?: unknown;
+
+  @IsOptional()
+  @IsEnum(DocumentFlowRepeatPolicy)
+  repeatPolicy?: DocumentFlowRepeatPolicy;
 
   @IsOptional()
   @IsArray()

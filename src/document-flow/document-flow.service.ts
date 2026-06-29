@@ -3,11 +3,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import {
   DocumentFlow,
   DocumentFlowExecutionStatus,
+  DocumentFlowLinkStatus,
   DocumentFlowMapping,
   DocumentFlowMappingType,
+  DocumentFlowRepeatPolicy,
   DocumentFlowStatus,
   FormStatus,
   Prisma,
@@ -42,6 +45,125 @@ export class DocumentFlowService {
     private readonly runtimeFormService: RuntimeFormService,
   ) {}
 
+  private async reserveFlowLink(params: {
+    tenantId: string;
+    flow: FlowWithMappings;
+    sourceRecordId: string;
+    sourceRecordNo?: string;
+    createdById: string;
+  }) {
+    const repeatPolicy =
+      params.flow.repeatPolicy ?? DocumentFlowRepeatPolicy.BLOCK;
+
+    const dedupKey =
+      repeatPolicy === DocumentFlowRepeatPolicy.BLOCK
+        ? params.sourceRecordId
+        : `${params.sourceRecordId}:${randomUUID()}`;
+
+    try {
+      return await this.prisma.documentFlowLink.create({
+        data: {
+          tenantId: params.tenantId,
+          flowId: params.flow.id,
+          sourceFormId: params.flow.sourceFormId,
+          sourceRecordId: params.sourceRecordId,
+          sourceRecordNo: params.sourceRecordNo,
+          targetFormId: params.flow.targetFormId,
+          status: DocumentFlowLinkStatus.RESERVED,
+          dedupKey,
+          createdById: params.createdById,
+        },
+      });
+    } catch (error) {
+      if (this.isUniqueError(error)) {
+        const existed = await this.prisma.documentFlowLink.findFirst({
+          where: {
+            tenantId: params.tenantId,
+            flowId: params.flow.id,
+            dedupKey: params.sourceRecordId,
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+
+        throw new BadRequestException(
+          existed?.targetRecordNo
+            ? `该源单据已通过当前规则生成目标单：${existed.targetRecordNo}`
+            : '该源单据正在执行或已执行过当前数据流转规则',
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  private isUniqueError(error: unknown) {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    );
+  }
+
+  async findTargetsBySource(user: CurrentUser, sourceRecordId: string) {
+    const tenantId = requireTenantId(user);
+
+    return this.prisma.documentFlowLink.findMany({
+      where: {
+        tenantId,
+        sourceRecordId,
+        status: DocumentFlowLinkStatus.SUCCESS,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        flow: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            direction: true,
+          },
+        },
+      },
+    });
+  }
+
+  async findSourcesByTarget(user: CurrentUser, targetRecordId: string) {
+    const tenantId = requireTenantId(user);
+
+    return this.prisma.documentFlowLink.findMany({
+      where: {
+        tenantId,
+        targetRecordId,
+        status: DocumentFlowLinkStatus.SUCCESS,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        flow: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            direction: true,
+          },
+        },
+      },
+    });
+  }
+
+  async findLinksByFlow(user: CurrentUser, flowId: string) {
+    const tenantId = requireTenantId(user);
+    await this.findFlowOrThrow(tenantId, flowId);
+
+    return this.prisma.documentFlowLink.findMany({
+      where: {
+        tenantId,
+        flowId,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
   async create(user: CurrentUser, dto: CreateDocumentFlowDto) {
     const tenantId = requireTenantId(user);
 
@@ -60,6 +182,7 @@ export class DocumentFlowService {
         targetFormId: dto.targetFormId,
         description: dto.description,
         config: dto.config as Prisma.InputJsonValue,
+        repeatPolicy: dto.repeatPolicy ?? DocumentFlowRepeatPolicy.BLOCK,
         mappings: {
           create: (dto.mappings ?? []).map((item) =>
             this.toMappingCreateInput(item),
@@ -114,6 +237,7 @@ export class DocumentFlowService {
         description: dto.description,
         config: dto.config as Prisma.InputJsonValue,
         status: DocumentFlowStatus.DRAFT,
+        repeatPolicy: dto.repeatPolicy,
         mappings: dto.mappings
           ? {
               deleteMany: {},
@@ -183,6 +307,7 @@ export class DocumentFlowService {
     )) as {
       id: string;
       formId: string;
+      recordNo: string;
       physicalData: SourcePhysicalData;
     };
 
@@ -195,49 +320,84 @@ export class DocumentFlowService {
       sourceRecord.physicalData,
     );
 
+    const link = await this.reserveFlowLink({
+      tenantId,
+      flow,
+      sourceRecordId: sourceRecord.id,
+      sourceRecordNo: sourceRecord.recordNo,
+      createdById: user.id,
+    });
+
     try {
       const targetRecord = (await this.runtimeFormService.create(user, {
         formId: flow.targetFormId,
         mainData: targetPayload.mainData,
         details: targetPayload.details,
         submit: dto.submit ?? false,
-      })) as { id: string };
+      })) as {
+        id: string;
+        recordNo: string;
+      };
 
-      const execution = await this.prisma.documentFlowExecution.create({
-        data: {
-          tenantId,
-          flowId: flow.id,
-          sourceFormId: flow.sourceFormId,
-          targetFormId: flow.targetFormId,
-          sourceRecordId: sourceRecord.id,
-          targetRecordId: targetRecord.id,
-          status: DocumentFlowExecutionStatus.SUCCESS,
-          payload: targetPayload as Prisma.InputJsonValue,
-          createdById: user.id,
-        },
-      });
+      const [updatedLink, execution] = await this.prisma.$transaction([
+        this.prisma.documentFlowLink.update({
+          where: { id: link.id },
+          data: {
+            targetRecordId: targetRecord.id,
+            targetRecordNo: targetRecord.recordNo,
+            status: DocumentFlowLinkStatus.SUCCESS,
+            errorMessage: null,
+          },
+        }),
+        this.prisma.documentFlowExecution.create({
+          data: {
+            tenantId,
+            flowId: flow.id,
+            linkId: link.id,
+            sourceFormId: flow.sourceFormId,
+            targetFormId: flow.targetFormId,
+            sourceRecordId: sourceRecord.id,
+            targetRecordId: targetRecord.id,
+            status: DocumentFlowExecutionStatus.SUCCESS,
+            payload: targetPayload as Prisma.InputJsonValue,
+            createdById: user.id,
+          },
+        }),
+      ]);
 
       return {
         targetRecord,
+        link: updatedLink,
         execution,
       };
     } catch (error) {
       const message =
         error instanceof Error ? error.message : '数据流转执行失败';
 
-      await this.prisma.documentFlowExecution.create({
-        data: {
-          tenantId,
-          flowId: flow.id,
-          sourceFormId: flow.sourceFormId,
-          targetFormId: flow.targetFormId,
-          sourceRecordId: sourceRecord.id,
-          status: DocumentFlowExecutionStatus.FAILED,
-          errorMessage: message,
-          payload: targetPayload as Prisma.InputJsonValue,
-          createdById: user.id,
-        },
-      });
+      await this.prisma.$transaction([
+        this.prisma.documentFlowLink.update({
+          where: { id: link.id },
+          data: {
+            status: DocumentFlowLinkStatus.FAILED,
+            dedupKey: null,
+            errorMessage: message,
+          },
+        }),
+        this.prisma.documentFlowExecution.create({
+          data: {
+            tenantId,
+            flowId: flow.id,
+            linkId: link.id,
+            sourceFormId: flow.sourceFormId,
+            targetFormId: flow.targetFormId,
+            sourceRecordId: sourceRecord.id,
+            status: DocumentFlowExecutionStatus.FAILED,
+            errorMessage: message,
+            payload: targetPayload as Prisma.InputJsonValue,
+            createdById: user.id,
+          },
+        }),
+      ]);
 
       throw new BadRequestException(`数据流转执行失败：${message}`);
     }
