@@ -26,6 +26,7 @@ model Tenant {
   invites UserInvite[]
   roles Role[]
   menus Menu[]
+  dictionaries Dictionary[]
 }
 
 model User {
@@ -193,4 +194,47 @@ model Menu {
   @@index([tenantId])
   @@index([parentId])
   @@index([permissionCode])
+}
+
+
+model Dictionary {
+  id          String   @id @default(uuid())
+  tenantId    String?
+  scopeKey    String
+  code        String
+  name        String
+  description String?
+  sort        Int      @default(0)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items  DictionaryItem[]
+
+  @@unique([scopeKey, code])
+  @@index([tenantId])
+  @@index([scopeKey])
+}
+
+model DictionaryItem {
+  id           String   @id @default(uuid())
+  dictionaryId String
+  parentId     String?
+  value        String
+  label        String
+  color        String?
+  sort         Int      @default(0)
+  isActive     Boolean  @default(true)
+  extra        Json?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  dictionary Dictionary       @relation(fields: [dictionaryId], references: [id], onDelete: Cascade)
+  parent     DictionaryItem?  @relation("DictionaryItemTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children   DictionaryItem[] @relation("DictionaryItemTree")
+
+  @@unique([dictionaryId, value])
+  @@index([dictionaryId])
+  @@index([parentId])
 }

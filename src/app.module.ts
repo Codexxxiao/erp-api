@@ -9,6 +9,7 @@ import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { TenantUserModule } from './tenant-user/tenant-user.module';
 import { PermissionModule } from './permission/permission.module';
 import { MenuModule } from './menu/menu.module';
+import { DictionaryModule } from './dictionary/dictionary.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { MenuModule } from './menu/menu.module';
     TenantUserModule,
     PermissionModule,
     MenuModule,
+    DictionaryModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
