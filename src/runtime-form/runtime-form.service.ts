@@ -4,16 +4,19 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import {
   FormFieldType,
   FormRecordStatus,
   FormStatus,
   FormTableType,
+  PhysicalSchemaStatus,
   Prisma,
 } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUser } from '../common/types/current-user';
 import { requireTenantId } from '../common/tenant/tenant-scope';
+import { quoteIdentifier } from '../form-schema-provision/form-schema.utils';
 import {
   CreateFormRecordDto,
   FormRecordDetailInputDto,
@@ -33,30 +36,51 @@ type RuntimeForm = Prisma.FormDefinitionGetPayload<{
 
 type RuntimeTable = RuntimeForm['tables'][number];
 
+type PhysicalTable = Prisma.FormPhysicalTableGetPayload<{
+  include: {
+    columns: true;
+  };
+}>;
+
+type NormalizedDetail = {
+  table: RuntimeTable;
+  rows: Record<string, unknown>[];
+};
+
+type SchemaBundle = {
+  form: RuntimeForm;
+  physicalTables: PhysicalTable[];
+};
+
 @Injectable()
 export class RuntimeFormService {
   constructor(private readonly prisma: PrismaService) {}
 
   async create(user: CurrentUser, dto: CreateFormRecordDto) {
     const tenantId = requireTenantId(user);
-    const form = await this.findEnabledForm(tenantId, dto.formId, dto.formCode);
+    const bundle = await this.findEnabledFormWithPhysicalSchema(
+      tenantId,
+      dto.formId,
+      dto.formCode,
+    );
 
     const normalized = this.normalizeAndValidate(
-      form,
+      bundle.form,
       dto.mainData,
       dto.details ?? [],
     );
-    const recordNo = this.generateRecordNo(form.code);
+
+    const recordNo = this.generateRecordNo(bundle.form.code);
     const status = dto.submit
       ? FormRecordStatus.SUBMITTED
       : FormRecordStatus.DRAFT;
 
-    return this.prisma.$transaction(async (tx) => {
+    const recordId = await this.prisma.$transaction(async (tx) => {
       const record = await tx.formRecord.create({
         data: {
           tenantId,
-          formId: form.id,
-          formCode: form.code,
+          formId: bundle.form.id,
+          formCode: bundle.form.code,
           recordNo,
           status,
           mainData: normalized.mainData as Prisma.InputJsonValue,
@@ -65,27 +89,22 @@ export class RuntimeFormService {
         },
       });
 
-      for (const detail of normalized.details) {
-        await tx.formRecordDetail.createMany({
-          data: detail.rows.map((row, index) => ({
-            recordId: record.id,
-            tableId: detail.table.id,
-            tableCode: detail.table.code,
-            rowIndex: index,
-            rowData: row as Prisma.InputJsonValue,
-          })),
-        });
-      }
-
-      return tx.formRecord.findUnique({
-        where: { id: record.id },
-        include: {
-          details: {
-            orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
-          },
-        },
+      await this.replaceAllPhysicalRows(tx, {
+        tenantId,
+        recordId: record.id,
+        form: bundle.form,
+        physicalTables: bundle.physicalTables,
+        mainData: normalized.mainData,
+        details: normalized.details,
+        userId: user.id,
       });
+
+      await this.replaceSnapshotDetails(tx, record.id, normalized.details);
+
+      return record.id;
     });
+
+    return this.findOne(user, recordId);
   }
 
   async findAll(user: CurrentUser, query: QueryFormRecordDto) {
@@ -112,11 +131,6 @@ export class RuntimeFormService {
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
         take: pageSize,
-        include: {
-          details: {
-            orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
-          },
-        },
       }),
     ]);
 
@@ -146,14 +160,26 @@ export class RuntimeFormService {
             },
           },
         },
-        details: {
-          orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
-        },
       },
     });
 
     if (!record) throw new NotFoundException('单据不存在');
-    return record;
+
+    const physicalTables = await this.getPhysicalTablesOrThrow(
+      tenantId,
+      record.formId,
+    );
+    const physicalData = await this.readPhysicalData(
+      tenantId,
+      record.id,
+      record.form,
+      physicalTables,
+    );
+
+    return {
+      ...record,
+      physicalData,
+    };
   }
 
   async update(user: CurrentUser, id: string, dto: UpdateFormRecordDto) {
@@ -173,50 +199,68 @@ export class RuntimeFormService {
     });
 
     if (!record) throw new NotFoundException('单据不存在');
+
     if (record.status !== FormRecordStatus.DRAFT) {
       throw new ForbiddenException('只有草稿单据允许修改');
     }
 
-    const normalized = this.normalizeAndValidate(
-      record.form,
-      dto.mainData ?? (record.mainData as Record<string, unknown>),
-      dto.details ?? [],
+    const physicalTables = await this.getPhysicalTablesOrThrow(
+      tenantId,
+      record.formId,
     );
 
-    return this.prisma.$transaction(async (tx) => {
-      await tx.formRecord.update({
-        where: { id },
-        data: {
-          mainData: normalized.mainData as Prisma.InputJsonValue,
-          updatedById: user.id,
-        },
-      });
+    const normalizedMain = dto.mainData
+      ? this.normalizeMain(record.form, dto.mainData)
+      : null;
 
-      if (dto.details) {
-        await tx.formRecordDetail.deleteMany({ where: { recordId: id } });
+    const normalizedDetails = dto.details
+      ? this.normalizeDetails(record.form, dto.details)
+      : null;
 
-        for (const detail of normalized.details) {
-          await tx.formRecordDetail.createMany({
-            data: detail.rows.map((row, index) => ({
-              recordId: id,
-              tableId: detail.table.id,
-              tableCode: detail.table.code,
-              rowIndex: index,
-              rowData: row as Prisma.InputJsonValue,
-            })),
-          });
-        }
+    await this.prisma.$transaction(async (tx) => {
+      if (normalizedMain) {
+        await tx.formRecord.update({
+          where: { id },
+          data: {
+            mainData: normalizedMain as Prisma.InputJsonValue,
+            updatedById: user.id,
+          },
+        });
+
+        await this.replaceMainPhysicalRow(tx, {
+          tenantId,
+          recordId: id,
+          form: record.form,
+          physicalTables,
+          mainData: normalizedMain,
+          userId: user.id,
+        });
       }
 
-      return tx.formRecord.findUnique({
-        where: { id },
-        include: {
-          details: {
-            orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
+      if (normalizedDetails) {
+        await this.replaceAllDetailPhysicalRows(tx, {
+          tenantId,
+          recordId: id,
+          form: record.form,
+          physicalTables,
+          details: normalizedDetails,
+          userId: user.id,
+        });
+
+        await this.replaceSnapshotDetails(tx, id, normalizedDetails);
+      }
+
+      if (!normalizedMain && !normalizedDetails) {
+        await tx.formRecord.update({
+          where: { id },
+          data: {
+            updatedById: user.id,
           },
-        },
-      });
+        });
+      }
     });
+
+    return this.findOne(user, id);
   }
 
   async submit(user: CurrentUser, id: string) {
@@ -227,6 +271,7 @@ export class RuntimeFormService {
     });
 
     if (!record) throw new NotFoundException('单据不存在');
+
     if (record.status !== FormRecordStatus.DRAFT) {
       throw new BadRequestException('只有草稿单据可以提交');
     }
@@ -237,11 +282,6 @@ export class RuntimeFormService {
         status: FormRecordStatus.SUBMITTED,
         submittedAt: new Date(),
         updatedById: user.id,
-      },
-      include: {
-        details: {
-          orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
-        },
       },
     });
   }
@@ -254,6 +294,7 @@ export class RuntimeFormService {
     });
 
     if (!record) throw new NotFoundException('单据不存在');
+
     if (record.status === FormRecordStatus.CANCELED) {
       throw new BadRequestException('单据已撤销');
     }
@@ -265,70 +306,70 @@ export class RuntimeFormService {
         canceledAt: new Date(),
         updatedById: user.id,
       },
-      include: {
-        details: {
-          orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
-        },
-      },
     });
   }
 
-  private async findEnabledForm(
+  private async findEnabledFormWithPhysicalSchema(
     tenantId: string,
     formId?: string,
     formCode?: string,
-  ) {
+  ): Promise<SchemaBundle> {
     if (!formId && !formCode) {
       throw new BadRequestException('formId 和 formCode 至少传一个');
     }
 
-    const include = {
-      tables: {
-        orderBy: [{ sort: 'asc' as const }, { createdAt: 'asc' as const }],
-        include: {
-          fields: {
-            orderBy: [{ sort: 'asc' as const }, { createdAt: 'asc' as const }],
+    const form = await this.prisma.formDefinition.findFirst({
+      where: {
+        tenantId,
+        status: FormStatus.ENABLED,
+        ...(formId ? { id: formId } : { code: formCode }),
+      },
+      include: {
+        tables: {
+          orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }],
+          include: {
+            fields: {
+              orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }],
+            },
           },
         },
       },
+    });
+
+    if (!form) throw new NotFoundException('启用表单不存在');
+
+    const physicalTables = await this.getPhysicalTablesOrThrow(
+      tenantId,
+      form.id,
+    );
+
+    return {
+      form,
+      physicalTables,
     };
+  }
 
-    if (formId) {
-      const form = await this.prisma.formDefinition.findFirst({
-        where: {
-          id: formId,
-          status: FormStatus.ENABLED,
-          OR: [{ tenantId }, { scopeKey: 'system' }],
-        },
-        include,
-      });
-
-      if (!form) throw new NotFoundException('启用表单不存在');
-      return form;
-    }
-
-    const tenantForm = await this.prisma.formDefinition.findFirst({
+  private async getPhysicalTablesOrThrow(tenantId: string, formId: string) {
+    const physicalTables = await this.prisma.formPhysicalTable.findMany({
       where: {
         tenantId,
-        code: formCode,
-        status: FormStatus.ENABLED,
+        formId,
+        status: PhysicalSchemaStatus.SYNCED,
       },
-      include,
+      include: {
+        columns: {
+          where: { isActive: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
     });
 
-    if (tenantForm) return tenantForm;
+    if (physicalTables.length === 0) {
+      throw new BadRequestException('请先发布表单并生成实体表');
+    }
 
-    const systemForm = await this.prisma.formDefinition.findFirst({
-      where: {
-        scopeKey: 'system',
-        code: formCode,
-        status: FormStatus.ENABLED,
-      },
-      include,
-    });
-
-    if (!systemForm) throw new NotFoundException('启用表单不存在');
-    return systemForm;
+    return physicalTables;
   }
 
   private normalizeAndValidate(
@@ -336,14 +377,26 @@ export class RuntimeFormService {
     mainData: Record<string, unknown>,
     details: FormRecordDetailInputDto[],
   ) {
+    return {
+      mainData: this.normalizeMain(form, mainData),
+      details: this.normalizeDetails(form, details),
+    };
+  }
+
+  private normalizeMain(form: RuntimeForm, mainData: Record<string, unknown>) {
     const mainTable = form.tables.find(
       (table) => table.type === FormTableType.MAIN,
     );
     if (!mainTable) throw new BadRequestException('表单未配置主表');
 
-    const normalizedMain = this.normalizeRow(mainTable, mainData, '主表');
+    return this.normalizeRow(mainTable, mainData, '主表');
+  }
 
-    const normalizedDetails = details.map((detail) => {
+  private normalizeDetails(
+    form: RuntimeForm,
+    details: FormRecordDetailInputDto[],
+  ) {
+    return details.map((detail) => {
       const table = form.tables.find(
         (item) =>
           item.code === detail.tableCode && item.type === FormTableType.SUB,
@@ -359,11 +412,6 @@ export class RuntimeFormService {
         ),
       };
     });
-
-    return {
-      mainData: normalizedMain,
-      details: normalizedDetails,
-    };
   }
 
   private normalizeRow(
@@ -408,38 +456,355 @@ export class RuntimeFormService {
     return result;
   }
 
+  private async replaceAllPhysicalRows(
+    tx: Prisma.TransactionClient,
+    params: {
+      tenantId: string;
+      recordId: string;
+      form: RuntimeForm;
+      physicalTables: PhysicalTable[];
+      mainData: Record<string, unknown>;
+      details: NormalizedDetail[];
+      userId: string;
+    },
+  ) {
+    await this.replaceMainPhysicalRow(tx, params);
+    await this.replaceAllDetailPhysicalRows(tx, params);
+  }
+
+  private async replaceMainPhysicalRow(
+    tx: Prisma.TransactionClient,
+    params: {
+      tenantId: string;
+      recordId: string;
+      form: RuntimeForm;
+      physicalTables: PhysicalTable[];
+      mainData: Record<string, unknown>;
+      userId: string;
+    },
+  ) {
+    const mainTable = params.form.tables.find(
+      (table) => table.type === FormTableType.MAIN,
+    );
+    if (!mainTable) throw new BadRequestException('表单未配置主表');
+
+    const physicalTable = this.findPhysicalTable(
+      params.physicalTables,
+      mainTable.id,
+    );
+
+    await this.deletePhysicalRows(
+      tx,
+      physicalTable.tableName,
+      params.tenantId,
+      params.recordId,
+    );
+
+    await this.insertPhysicalRow(tx, {
+      physicalTable,
+      tenantId: params.tenantId,
+      recordId: params.recordId,
+      formId: params.form.id,
+      formVersion: params.form.version,
+      rowIndex: 0,
+      rowData: params.mainData,
+      userId: params.userId,
+    });
+  }
+
+  private async replaceAllDetailPhysicalRows(
+    tx: Prisma.TransactionClient,
+    params: {
+      tenantId: string;
+      recordId: string;
+      form: RuntimeForm;
+      physicalTables: PhysicalTable[];
+      details: NormalizedDetail[];
+      userId: string;
+    },
+  ) {
+    const subTables = params.form.tables.filter(
+      (table) => table.type === FormTableType.SUB,
+    );
+
+    for (const table of subTables) {
+      const physicalTable = this.findPhysicalTable(
+        params.physicalTables,
+        table.id,
+      );
+      await this.deletePhysicalRows(
+        tx,
+        physicalTable.tableName,
+        params.tenantId,
+        params.recordId,
+      );
+    }
+
+    for (const detail of params.details) {
+      const physicalTable = this.findPhysicalTable(
+        params.physicalTables,
+        detail.table.id,
+      );
+
+      for (const [index, row] of detail.rows.entries()) {
+        await this.insertPhysicalRow(tx, {
+          physicalTable,
+          tenantId: params.tenantId,
+          recordId: params.recordId,
+          formId: params.form.id,
+          formVersion: params.form.version,
+          rowIndex: index,
+          rowData: row,
+          userId: params.userId,
+        });
+      }
+    }
+  }
+
+  private async deletePhysicalRows(
+    tx: Prisma.TransactionClient,
+    tableName: string,
+    tenantId: string,
+    recordId: string,
+  ) {
+    await tx.$executeRawUnsafe(
+      `
+        DELETE FROM ${quoteIdentifier(tableName)}
+        WHERE tenant_id = $1 AND record_id = $2
+      `,
+      tenantId,
+      recordId,
+    );
+  }
+
+  private async insertPhysicalRow(
+    tx: Prisma.TransactionClient,
+    params: {
+      physicalTable: PhysicalTable;
+      tenantId: string;
+      recordId: string;
+      formId: string;
+      formVersion: number;
+      rowIndex: number;
+      rowData: Record<string, unknown>;
+      userId: string;
+    },
+  ) {
+    const columnNames: string[] = [];
+    const placeholders: string[] = [];
+    const values: unknown[] = [];
+
+    const pushValue = (
+      columnName: string,
+      value: unknown,
+      sqlType?: string,
+    ) => {
+      columnNames.push(columnName);
+      values.push(
+        sqlType === 'jsonb' ? JSON.stringify(value ?? null) : (value ?? null),
+      );
+
+      const index = values.length;
+      placeholders.push(sqlType === 'jsonb' ? `$${index}::jsonb` : `$${index}`);
+    };
+
+    pushValue('id', randomUUID());
+    pushValue('tenant_id', params.tenantId);
+    pushValue('record_id', params.recordId);
+    pushValue('row_index', params.rowIndex);
+    pushValue('form_id', params.formId);
+    pushValue('form_version', params.formVersion);
+    pushValue('created_by_id', params.userId);
+    pushValue('updated_by_id', params.userId);
+
+    for (const column of params.physicalTable.columns) {
+      const rawValue = params.rowData[column.fieldCode];
+
+      if (rawValue && typeof rawValue === 'object' && 'value' in rawValue) {
+        const option = rawValue as {
+          value?: unknown;
+          label?: unknown;
+          extra?: unknown;
+        };
+
+        pushValue(column.columnName, option.value, column.sqlType);
+
+        if (column.labelColumnName) {
+          pushValue(column.labelColumnName, option.label);
+        }
+
+        if (column.extraColumnName) {
+          pushValue(column.extraColumnName, option.extra, 'jsonb');
+        }
+      } else {
+        pushValue(column.columnName, rawValue, column.sqlType);
+      }
+    }
+
+    const sql = `
+      INSERT INTO ${quoteIdentifier(params.physicalTable.tableName)}
+      (${columnNames.map(quoteIdentifier).join(', ')})
+      VALUES (${placeholders.join(', ')})
+    `;
+
+    await tx.$executeRawUnsafe(sql, ...values);
+  }
+
+  private async replaceSnapshotDetails(
+    tx: Prisma.TransactionClient,
+    recordId: string,
+    details: NormalizedDetail[],
+  ) {
+    await tx.formRecordDetail.deleteMany({
+      where: { recordId },
+    });
+
+    for (const detail of details) {
+      await tx.formRecordDetail.createMany({
+        data: detail.rows.map((row, index) => ({
+          recordId,
+          tableId: detail.table.id,
+          tableCode: detail.table.code,
+          rowIndex: index,
+          rowData: row as Prisma.InputJsonValue,
+        })),
+      });
+    }
+  }
+
+  private async readPhysicalData(
+    tenantId: string,
+    recordId: string,
+    form: RuntimeForm,
+    physicalTables: PhysicalTable[],
+  ) {
+    const mainTable = form.tables.find(
+      (table) => table.type === FormTableType.MAIN,
+    );
+    if (!mainTable) throw new BadRequestException('表单未配置主表');
+
+    const mainPhysicalTable = this.findPhysicalTable(
+      physicalTables,
+      mainTable.id,
+    );
+    const mainRows = await this.queryPhysicalRows(
+      mainPhysicalTable.tableName,
+      tenantId,
+      recordId,
+    );
+
+    const mainData = this.toBusinessRows(mainPhysicalTable, mainRows)[0] ?? {};
+
+    const details = [];
+
+    for (const table of form.tables.filter(
+      (item) => item.type === FormTableType.SUB,
+    )) {
+      const physicalTable = this.findPhysicalTable(physicalTables, table.id);
+      const rows = await this.queryPhysicalRows(
+        physicalTable.tableName,
+        tenantId,
+        recordId,
+      );
+
+      details.push({
+        tableId: table.id,
+        tableCode: table.code,
+        tableName: table.name,
+        rows: this.toBusinessRows(physicalTable, rows),
+      });
+    }
+
+    return {
+      mainData,
+      details,
+    };
+  }
+
+  private async queryPhysicalRows(
+    tableName: string,
+    tenantId: string,
+    recordId: string,
+  ) {
+    return this.prisma.$queryRawUnsafe<Record<string, unknown>[]>(
+      `
+        SELECT *
+        FROM ${quoteIdentifier(tableName)}
+        WHERE tenant_id = $1 AND record_id = $2
+        ORDER BY row_index ASC, created_at ASC
+      `,
+      tenantId,
+      recordId,
+    );
+  }
+
+  private toBusinessRows(
+    physicalTable: PhysicalTable,
+    rows: Record<string, unknown>[],
+  ) {
+    return rows.map((row) => {
+      const result: Record<string, unknown> = {};
+
+      for (const column of physicalTable.columns) {
+        if (column.labelColumnName || column.extraColumnName) {
+          result[column.fieldCode] = {
+            value: row[column.columnName],
+            label: column.labelColumnName ? row[column.labelColumnName] : null,
+            extra: column.extraColumnName ? row[column.extraColumnName] : null,
+          };
+        } else {
+          result[column.fieldCode] = row[column.columnName];
+        }
+      }
+
+      return result;
+    });
+  }
+
+  private findPhysicalTable(physicalTables: PhysicalTable[], tableId: string) {
+    const physicalTable = physicalTables.find(
+      (item) => item.tableId === tableId,
+    );
+
+    if (!physicalTable) {
+      throw new BadRequestException('表单实体表未同步，请重新发布表单');
+    }
+
+    return physicalTable;
+  }
+
   private validateFieldValue(
     type: FormFieldType,
     value: unknown,
     label: string,
   ) {
-    switch (type) {
-      case FormFieldType.TEXT:
-      case FormFieldType.TEXTAREA:
-        if (typeof value !== 'string') {
-          throw new BadRequestException(`${label} 必须是字符串`);
-        }
-        break;
-      case FormFieldType.NUMBER:
-      case FormFieldType.DECIMAL:
-      case FormFieldType.MONEY:
-        if (typeof value !== 'number') {
-          throw new BadRequestException(`${label} 必须是数字`);
-        }
-        break;
-      case FormFieldType.BOOLEAN:
-        if (typeof value !== 'boolean') {
-          throw new BadRequestException(`${label} 必须是布尔值`);
-        }
-        break;
-      case FormFieldType.DATE:
-      case FormFieldType.DATETIME:
-        if (typeof value !== 'string') {
-          throw new BadRequestException(`${label} 必须是日期字符串`);
-        }
-        break;
-      default:
-        break;
+    if (
+      [FormFieldType.TEXT, FormFieldType.TEXTAREA].includes(type) &&
+      typeof value !== 'string'
+    ) {
+      throw new BadRequestException(`${label} 必须是字符串`);
+    }
+
+    if (
+      [
+        FormFieldType.NUMBER,
+        FormFieldType.DECIMAL,
+        FormFieldType.MONEY,
+      ].includes(type) &&
+      typeof value !== 'number'
+    ) {
+      throw new BadRequestException(`${label} 必须是数字`);
+    }
+
+    if (type === FormFieldType.BOOLEAN && typeof value !== 'boolean') {
+      throw new BadRequestException(`${label} 必须是布尔值`);
+    }
+
+    if (
+      [FormFieldType.DATE, FormFieldType.DATETIME].includes(type) &&
+      typeof value !== 'string'
+    ) {
+      throw new BadRequestException(`${label} 必须是日期字符串`);
     }
   }
 
@@ -462,118 +827,26 @@ export class RuntimeFormService {
       }
     }
 
-    const substituted = [...dependencies]
-      .sort((a, b) => b.length - a.length)
-      .reduce((expr, key) => {
-        const value = row[key];
-        const numberValue =
-          typeof value === 'number' ? value : Number(value ?? 0);
-        const safeNum = Number.isFinite(numberValue) ? numberValue : 0;
-        return expr.replace(
-          new RegExp(`\\b${this.escapeRegExp(key)}\\b`, 'g'),
-          String(safeNum),
-        );
-      }, expression);
-
-    if (!/^[0-9+\-*/().\s]+$/.test(substituted)) {
-      throw new BadRequestException(`${label} 公式包含非法字符`);
-    }
+    const args = dependencies;
+    const values = dependencies.map((key) => {
+      const value = row[key];
+      const numberValue =
+        typeof value === 'number' ? value : Number(value ?? 0);
+      return Number.isFinite(numberValue) ? numberValue : 0;
+    });
 
     try {
-      return this.evaluateNumericExpression(substituted, label);
-    } catch (error) {
-      if (error instanceof BadRequestException) throw error;
+      const fn = new Function(...args, `"use strict"; return (${expression});`);
+      const result = fn(...values);
+
+      if (typeof result !== 'number' || !Number.isFinite(result)) {
+        throw new Error('invalid formula result');
+      }
+
+      return result;
+    } catch {
       throw new BadRequestException(`${label} 公式计算失败`);
     }
-  }
-
-  private escapeRegExp(value: string) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-
-  private evaluateNumericExpression(expression: string, label: string) {
-    const chars = expression.replace(/\s/g, '');
-    let index = 0;
-
-    const parseExpression = (): number => {
-      let result = parseTerm();
-      while (index < chars.length) {
-        const op = chars[index];
-        if (op !== '+' && op !== '-') break;
-        index++;
-        const term = parseTerm();
-        result = op === '+' ? result + term : result - term;
-      }
-      return result;
-    };
-
-    const parseTerm = (): number => {
-      let result = parseFactor();
-      while (index < chars.length) {
-        const op = chars[index];
-        if (op !== '*' && op !== '/') break;
-        index++;
-        const factor = parseFactor();
-        if (op === '/') {
-          if (factor === 0) {
-            throw new BadRequestException(`${label} 除数不能为 0`);
-          }
-          result = result / factor;
-        } else {
-          result = result * factor;
-        }
-      }
-      return result;
-    };
-
-    const parseFactor = (): number => {
-      if (chars[index] === '(') {
-        index++;
-        const result = parseExpression();
-        if (chars[index] !== ')') {
-          throw new BadRequestException(`${label} 公式括号不匹配`);
-        }
-        index++;
-        return result;
-      }
-
-      if (chars[index] === '-') {
-        index++;
-        return -parseFactor();
-      }
-
-      if (chars[index] === '+') {
-        index++;
-        return parseFactor();
-      }
-
-      const start = index;
-      while (index < chars.length && /[0-9.]/.test(chars[index])) {
-        index++;
-      }
-
-      if (start === index) {
-        throw new BadRequestException(`${label} 公式格式错误`);
-      }
-
-      const num = Number(chars.slice(start, index));
-      if (!Number.isFinite(num)) {
-        throw new BadRequestException(`${label} 公式数字无效`);
-      }
-
-      return num;
-    };
-
-    const result = parseExpression();
-    if (index !== chars.length) {
-      throw new BadRequestException(`${label} 公式格式错误`);
-    }
-
-    if (!Number.isFinite(result)) {
-      throw new BadRequestException(`${label} 公式计算失败`);
-    }
-
-    return result;
   }
 
   private hasValue(value: unknown) {

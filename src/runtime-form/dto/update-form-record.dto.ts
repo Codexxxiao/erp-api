@@ -7,6 +7,7 @@ export class UpdateFormRecordDto {
   @IsObject()
   mainData?: Record<string, unknown>;
 
+  // 传入 details 时，表示全量替换当前单据的所有附表数据
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })

@@ -13,6 +13,8 @@ import { DictionaryModule } from './dictionary/dictionary.module';
 import { DatasourceModule } from './datasource/datasource.module';
 import { MetadataModule } from './metadata/metadata.module';
 import { RuntimeFormModule } from './runtime-form/runtime-form.module';
+import { FormSchemaProvisionModule } from './form-schema-provision/form-schema-provision.module';
+import { DocumentFlowModule } from './document-flow/document-flow.module';
 
 @Module({
   imports: [
@@ -28,6 +30,8 @@ import { RuntimeFormModule } from './runtime-form/runtime-form.module';
     DatasourceModule,
     MetadataModule,
     RuntimeFormModule,
+    FormSchemaProvisionModule,
+    DocumentFlowModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

@@ -456,3 +456,140 @@ model FormRecordDetail {
   @@index([tableId])
   @@index([tableCode])
 }
+
+
+enum PhysicalSchemaStatus {
+  DRAFT
+  SYNCED
+  FAILED
+}
+
+model FormPhysicalTable {
+  id          String               @id @default(uuid())
+  tenantId    String
+  formId      String
+  tableId     String
+  formVersion Int
+  tableCode   String
+  tableName   String
+  status      PhysicalSchemaStatus @default(DRAFT)
+  lastError   String?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+
+  columns FormPhysicalColumn[]
+
+  @@unique([tableId])
+  @@unique([tenantId, tableName])
+  @@index([tenantId])
+  @@index([formId])
+}
+
+model FormPhysicalColumn {
+  id              String   @id @default(uuid())
+  physicalTableId String
+  fieldId         String
+  fieldCode       String
+  columnName      String
+  labelColumnName String?
+  extraColumnName String?
+  sqlType         String
+  isRequired      Boolean  @default(false)
+  isNullable      Boolean  @default(true)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  physicalTable FormPhysicalTable @relation(fields: [physicalTableId], references: [id], onDelete: Cascade)
+
+  @@unique([physicalTableId, fieldId])
+  @@unique([physicalTableId, columnName])
+  @@index([fieldId])
+}
+
+
+enum DocumentFlowDirection {
+  PUSH_DOWN
+  IMPORT
+}
+
+enum DocumentFlowStatus {
+  DRAFT
+  ENABLED
+  DISABLED
+}
+
+enum DocumentFlowMappingType {
+  FIELD
+  CONSTANT
+}
+
+enum DocumentFlowExecutionStatus {
+  SUCCESS
+  FAILED
+}
+
+model DocumentFlow {
+  id           String                @id @default(uuid())
+  tenantId     String
+  code         String
+  name         String
+  direction    DocumentFlowDirection
+  sourceFormId String
+  targetFormId String
+  status       DocumentFlowStatus    @default(DRAFT)
+  description  String?
+  config       Json?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  mappings   DocumentFlowMapping[]
+  executions DocumentFlowExecution[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([sourceFormId])
+  @@index([targetFormId])
+}
+
+model DocumentFlowMapping {
+  id              String                  @id @default(uuid())
+  flowId          String
+  sourceTableCode String?
+  sourceFieldCode String?
+  targetTableCode String?
+  targetFieldCode String
+  mappingType     DocumentFlowMappingType @default(FIELD)
+  constantValue   Json?
+  sort            Int                     @default(0)
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  flow DocumentFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@index([flowId])
+  @@index([sourceTableCode])
+  @@index([targetTableCode])
+}
+
+model DocumentFlowExecution {
+  id             String                      @id @default(uuid())
+  tenantId       String
+  flowId         String
+  sourceFormId   String
+  targetFormId   String
+  sourceRecordId String
+  targetRecordId String?
+  status         DocumentFlowExecutionStatus
+  payload        Json?
+  errorMessage   String?
+  createdById    String
+  createdAt      DateTime                    @default(now())
+
+  flow DocumentFlow @relation(fields: [flowId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([flowId])
+  @@index([sourceRecordId])
+  @@index([targetRecordId])
+}
