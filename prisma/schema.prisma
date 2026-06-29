@@ -22,36 +22,38 @@ model Tenant {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  users User[]
-  invites UserInvite[]
-  roles Role[]
-  menus Menu[]
+  users        User[]
+  invites      UserInvite[]
+  roles        Role[]
+  menus        Menu[]
   dictionaries Dictionary[]
-  dataSources DataSource[]
-  forms FormDefinition[]
+  dataSources  DataSource[]
+  forms        FormDefinition[]
+  formRecords  FormRecord[]
 }
 
 model User {
-  id              String   @id @default(uuid())
-  tenantId        String?
-  identity        String   @unique
-  username        String
-  passwordHash    String
-  nickname        String?
-  isPlatformAdmin Boolean  @default(false)
-  isTenantAdmin   Boolean  @default(false)
-  isActive        Boolean  @default(true)
-  mustChangePassword Boolean @default(false)  // 新增：首次登录强制改密
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  tenant         Tenant?        @relation(fields: [tenantId], references: [id])
-  refreshTokens  RefreshToken[]
-  invitesSent    UserInvite[]   @relation("InviteCreator")
-  invitesAccepted UserInvite[]  @relation("InviteAcceptor")
-  @@unique([tenantId, username])
-  @@index([tenantId])
+  id                 String         @id @default(uuid())
+  tenantId           String?
+  identity           String         @unique
+  username           String
+  passwordHash       String
+  nickname           String?
+  isPlatformAdmin    Boolean        @default(false)
+  isTenantAdmin      Boolean        @default(false)
+  isActive           Boolean        @default(true)
+  mustChangePassword Boolean        @default(false) // 新增：首次登录强制改密
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  tenant             Tenant?        @relation(fields: [tenantId], references: [id])
+  refreshTokens      RefreshToken[]
+  invitesSent        UserInvite[]   @relation("InviteCreator")
+  invitesAccepted    UserInvite[]   @relation("InviteAcceptor")
 
   userRoles UserRole[]
+
+  @@unique([tenantId, username])
+  @@index([tenantId])
 }
 
 model AuditLog {
@@ -75,7 +77,8 @@ model RefreshToken {
   expiresAt DateTime
   revokedAt DateTime?
   createdAt DateTime  @default(now())
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([userId])
 }
 
@@ -90,13 +93,13 @@ model UserInvite {
   acceptedById String?
   invitedById  String
   createdAt    DateTime  @default(now())
-  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  invitedBy  User   @relation("InviteCreator", fields: [invitedById], references: [id])
-  acceptedBy User?  @relation("InviteAcceptor", fields: [acceptedById], references: [id])
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invitedBy    User      @relation("InviteCreator", fields: [invitedById], references: [id])
+  acceptedBy   User?     @relation("InviteAcceptor", fields: [acceptedById], references: [id])
+
   @@unique([tenantId, username])
   @@index([tenantId])
 }
-
 
 enum PermissionType {
   API
@@ -198,7 +201,6 @@ model Menu {
   @@index([permissionCode])
 }
 
-
 model Dictionary {
   id          String   @id @default(uuid())
   tenantId    String?
@@ -240,7 +242,6 @@ model DictionaryItem {
   @@index([dictionaryId])
   @@index([parentId])
 }
-
 
 enum DataSourceType {
   STATIC
@@ -301,7 +302,6 @@ model DataSourceField {
   @@index([dataSourceId])
 }
 
-
 enum FormStatus {
   DRAFT
   ENABLED
@@ -344,8 +344,9 @@ model FormDefinition {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
-  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tables FormTable[]
+  tenant  Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tables  FormTable[]
+  records FormRecord[]
 
   @@unique([scopeKey, code])
   @@index([tenantId])
@@ -366,10 +367,11 @@ model FormTable {
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 
-  form     FormDefinition @relation(fields: [formId], references: [id], onDelete: Cascade)
-  parent   FormTable?     @relation("FormTableTree", fields: [parentId], references: [id], onDelete: Cascade)
-  children FormTable[]    @relation("FormTableTree")
-  fields   FormField[]
+  form          FormDefinition     @relation(fields: [formId], references: [id], onDelete: Cascade)
+  parent        FormTable?         @relation("FormTableTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children      FormTable[]        @relation("FormTableTree")
+  fields        FormField[]
+  recordDetails FormRecordDetail[]
 
   @@unique([formId, code])
   @@index([formId])
@@ -377,30 +379,80 @@ model FormTable {
 }
 
 model FormField {
-  id                 String        @id @default(uuid())
-  tableId            String
-  code               String
-  name               String
-  type               FormFieldType
-  required           Boolean       @default(false)
-  unique             Boolean       @default(false)
-  readonly           Boolean       @default(false)
-  hidden             Boolean       @default(false)
-  defaultValue       Json?
-  dictionaryCode     String?
-  dataSourceCode     String?
-  dataSourceMapping  Json?
-  formula            Json?
-  validationRules    Json?
-  visibleWhen        Json?
-  config             Json?
-  sort               Int           @default(0)
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
+  id                String        @id @default(uuid())
+  tableId           String
+  code              String
+  name              String
+  type              FormFieldType
+  required          Boolean       @default(false)
+  unique            Boolean       @default(false)
+  readonly          Boolean       @default(false)
+  hidden            Boolean       @default(false)
+  defaultValue      Json?
+  dictionaryCode    String?
+  dataSourceCode    String?
+  dataSourceMapping Json?
+  formula           Json?
+  validationRules   Json?
+  visibleWhen       Json?
+  config            Json?
+  sort              Int           @default(0)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
   table FormTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
 
   @@unique([tableId, code])
   @@index([tableId])
   @@index([code])
+}
+
+enum FormRecordStatus {
+  DRAFT
+  SUBMITTED
+  CANCELED
+}
+
+model FormRecord {
+  id          String           @id @default(uuid())
+  tenantId    String
+  formId      String
+  formCode    String
+  recordNo    String
+  status      FormRecordStatus @default(DRAFT)
+  mainData    Json
+  createdById String
+  updatedById String?
+  submittedAt DateTime?
+  canceledAt  DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  form    FormDefinition     @relation(fields: [formId], references: [id], onDelete: Restrict)
+  details FormRecordDetail[]
+
+  @@unique([tenantId, recordNo])
+  @@index([tenantId])
+  @@index([formId])
+  @@index([formCode])
+  @@index([status])
+}
+
+model FormRecordDetail {
+  id        String   @id @default(uuid())
+  recordId  String
+  tableId   String
+  tableCode String
+  rowIndex  Int      @default(0)
+  rowData   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  record FormRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  table  FormTable  @relation(fields: [tableId], references: [id], onDelete: Restrict)
+
+  @@index([recordId])
+  @@index([tableId])
+  @@index([tableCode])
 }

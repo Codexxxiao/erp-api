@@ -12,6 +12,7 @@ import { MenuModule } from './menu/menu.module';
 import { DictionaryModule } from './dictionary/dictionary.module';
 import { DatasourceModule } from './datasource/datasource.module';
 import { MetadataModule } from './metadata/metadata.module';
+import { RuntimeFormModule } from './runtime-form/runtime-form.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { MetadataModule } from './metadata/metadata.module';
     DictionaryModule,
     DatasourceModule,
     MetadataModule,
+    RuntimeFormModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
