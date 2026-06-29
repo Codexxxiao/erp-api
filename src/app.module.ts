@@ -7,6 +7,8 @@ import { TenantModule } from './tenant/tenant.module';
 import { AuditModule } from './audit/audit.module';
 import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { TenantUserModule } from './tenant-user/tenant-user.module';
+import { PermissionModule } from './permission/permission.module';
+import { MenuModule } from './menu/menu.module';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { TenantUserModule } from './tenant-user/tenant-user.module';
     TenantModule,
     AuditModule,
     TenantUserModule,
+    PermissionModule,
+    MenuModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
