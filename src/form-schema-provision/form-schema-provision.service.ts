@@ -21,6 +21,25 @@ import {
   mapFieldTypeToSql,
   quoteIdentifier,
 } from './form-schema.utils';
+import type { FormSnapshot } from '../form-snapshot/form-snapshot.types';
+
+type SnapshotTable = FormSnapshot['tables'][number];
+
+type PhysicalTablePlan = {
+  tableId: string;
+  tableCode: string;
+  tableName: string;
+  tableType: SnapshotTable['type'];
+  columns: Array<{
+    fieldId: string;
+    fieldCode: string;
+    columnName: string;
+    labelColumnName: string | null;
+    extraColumnName: string | null;
+    sqlType: string;
+    isRequired: boolean;
+  }>;
+};
 
 type ProvisionForm = Prisma.FormDefinitionGetPayload<{
   include: {
@@ -43,151 +62,155 @@ type PhysicalColumnPlan = {
   isRequired: boolean;
 };
 
-type PhysicalTablePlan = {
-  tableId: string;
-  tableCode: string;
-  tableName: string;
-  tableType: FormTableType;
-  columns: PhysicalColumnPlan[];
-};
-
 @Injectable()
 export class FormSchemaProvisionService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async publishTenantForm(user: CurrentUser, formId: string) {
+  private validateSnapshot(snapshot: FormSnapshot) {
+    const mainTables = snapshot.tables.filter(
+      (table) => table.type === FormTableType.MAIN,
+    );
+
+    if (mainTables.length !== 1) {
+      throw new BadRequestException('快照必须且只能包含一张主表');
+    }
+  }
+
+  private buildPlansFromSnapshot(
+    snapshot: FormSnapshot,
+    tenantCode: string,
+  ): PhysicalTablePlan[] {
+    return snapshot.tables.map((table) => {
+      const tableName = buildPhysicalTableName({
+        tenantCode,
+        formCode: snapshot.form.code,
+        tableCode: table.code,
+        tableId: table.id,
+      });
+
+      return {
+        tableId: table.id,
+        tableCode: table.code,
+        tableName,
+        tableType: table.type,
+        columns: table.fields.map((field) => {
+          const columnName = buildPhysicalColumnName(field.code, field.id);
+          const needExtra =
+            field.type === FormFieldType.DICTIONARY ||
+            field.type === FormFieldType.DATASOURCE;
+
+          return {
+            fieldId: field.id,
+            fieldCode: field.code,
+            columnName,
+            labelColumnName: needExtra
+              ? buildDerivedColumnName(columnName, '_label')
+              : null,
+            extraColumnName: needExtra
+              ? buildDerivedColumnName(columnName, '_extra')
+              : null,
+            sqlType: mapFieldTypeToSql(field.type),
+            isRequired: field.required,
+          };
+        }),
+      };
+    });
+  }
+
+  async publishTenantForm(user: CurrentUser, formId: string, version?: number) {
     const tenantId = requireTenantId(user);
 
-    const form = await this.prisma.formDefinition.findFirst({
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+    if (!tenant) throw new BadRequestException('租户不存在');
+
+    const formVersion = await this.prisma.formVersion.findFirst({
       where: {
-        id: formId,
         tenantId,
+        formId,
+        ...(version ? { version } : {}),
       },
-      include: {
-        tenant: true,
-        tables: {
-          orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }],
-          include: {
-            fields: {
-              orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }],
-            },
-          },
-        },
-      },
+      orderBy: { version: 'desc' },
     });
 
-    if (!form) throw new NotFoundException('表单不存在');
+    if (!formVersion) {
+      throw new BadRequestException('请先发布表单快照');
+    }
 
-    this.validateBeforePublish(form);
+    const snapshot = formVersion.snapshot as FormSnapshot;
+    this.validateSnapshot(snapshot);
 
-    const nextVersion = form.version + 1;
-    const plans = this.buildPlans(form);
+    const plans = this.buildPlansFromSnapshot(snapshot, tenant.code);
 
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        for (const plan of plans) {
-          const physicalTable = await this.upsertPhysicalTable(tx, {
-            tenantId,
-            formId: form.id,
-            tableId: plan.tableId,
-            tableCode: plan.tableCode,
-            tableName: plan.tableName,
-            formVersion: nextVersion,
-          });
+    return this.prisma.$transaction(async (tx) => {
+      for (const plan of plans) {
+        const physicalTable = await this.upsertPhysicalTable(tx, {
+          tenantId,
+          formId,
+          tableId: plan.tableId,
+          tableCode: plan.tableCode,
+          tableName: plan.tableName,
+          formVersion: snapshot.form.version,
+          formVersionId: formVersion.id,
+        });
 
-          await this.ensureBaseTable(tx, plan);
-          await this.ensureIndexes(tx, plan);
+        await this.ensureBaseTable(tx, plan);
+        await this.ensureIndexes(tx, plan);
 
-          await tx.formPhysicalColumn.updateMany({
-            where: {
-              physicalTableId: physicalTable.id,
-            },
-            data: {
-              isActive: false,
-            },
-          });
+        await tx.formPhysicalColumn.updateMany({
+          where: { physicalTableId: physicalTable.id },
+          data: { isActive: false },
+        });
 
-          for (const column of plan.columns) {
+        for (const column of plan.columns) {
+          await this.ensureColumn(
+            tx,
+            plan.tableName,
+            column.columnName,
+            column.sqlType,
+          );
+
+          if (column.labelColumnName) {
             await this.ensureColumn(
               tx,
               plan.tableName,
-              column.columnName,
-              column.sqlType,
+              column.labelColumnName,
+              'text',
             );
-
-            if (column.labelColumnName) {
-              await this.ensureColumn(
-                tx,
-                plan.tableName,
-                column.labelColumnName,
-                'text',
-              );
-            }
-
-            if (column.extraColumnName) {
-              await this.ensureColumn(
-                tx,
-                plan.tableName,
-                column.extraColumnName,
-                'jsonb',
-              );
-            }
-
-            await this.upsertPhysicalColumn(tx, physicalTable.id, column);
           }
 
-          await tx.formPhysicalTable.update({
-            where: { id: physicalTable.id },
-            data: {
-              status: PhysicalSchemaStatus.SYNCED,
-              lastError: null,
-              formVersion: nextVersion,
-            },
-          });
+          if (column.extraColumnName) {
+            await this.ensureColumn(
+              tx,
+              plan.tableName,
+              column.extraColumnName,
+              'jsonb',
+            );
+          }
+
+          await this.upsertPhysicalColumn(tx, physicalTable.id, column);
         }
 
-        const updatedForm = await tx.formDefinition.update({
-          where: { id: form.id },
+        await tx.formPhysicalTable.update({
+          where: { id: physicalTable.id },
           data: {
-            status: FormStatus.ENABLED,
-            version: nextVersion,
+            status: PhysicalSchemaStatus.SYNCED,
+            lastError: null,
+            formVersion: snapshot.form.version,
+            formVersionId: formVersion.id,
           },
         });
+      }
 
-        const physicalTables = await tx.formPhysicalTable.findMany({
-          where: {
-            tenantId,
-            formId: form.id,
-          },
-          include: {
-            columns: {
-              orderBy: { createdAt: 'asc' },
-            },
-          },
-          orderBy: { createdAt: 'asc' },
-        });
-
-        return {
-          form: updatedForm,
-          physicalTables,
-        };
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '同步实体表失败';
-
-      await this.prisma.formPhysicalTable.updateMany({
-        where: {
-          tenantId,
-          formId,
-        },
-        data: {
-          status: PhysicalSchemaStatus.FAILED,
-          lastError: message,
-        },
+      const physicalTables = await tx.formPhysicalTable.findMany({
+        where: { tenantId, formId },
+        include: { columns: { orderBy: { createdAt: 'asc' } } },
+        orderBy: { createdAt: 'asc' },
       });
 
-      throw new BadRequestException(`同步实体表失败：${message}`);
-    }
+      return { formVersion, physicalTables };
+    });
   }
 
   async getPhysicalSchema(user: CurrentUser, formId: string) {
@@ -376,12 +399,11 @@ export class FormSchemaProvisionService {
       tableCode: string;
       tableName: string;
       formVersion: number;
+      formVersionId: string;
     },
   ) {
     const existed = await tx.formPhysicalTable.findUnique({
-      where: {
-        tableId: data.tableId,
-      },
+      where: { tableId: data.tableId },
     });
 
     if (existed) {
@@ -391,6 +413,7 @@ export class FormSchemaProvisionService {
           tableCode: data.tableCode,
           tableName: data.tableName,
           formVersion: data.formVersion,
+          formVersionId: data.formVersionId,
           status: PhysicalSchemaStatus.DRAFT,
         },
       });

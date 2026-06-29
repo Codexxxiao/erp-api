@@ -10,6 +10,8 @@ import {
   FormRecordStatus,
   FormStatus,
   FormTableType,
+  FormVersion,
+  FormVersionStatus,
   PhysicalSchemaStatus,
   Prisma,
 } from '../generated/prisma/client';
@@ -17,6 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import type { CurrentUser } from '../common/types/current-user';
 import { requireTenantId } from '../common/tenant/tenant-scope';
 import { quoteIdentifier } from '../form-schema-provision/form-schema.utils';
+import type { FormSnapshot } from '../form-snapshot/form-snapshot.types';
 import {
   CreateFormRecordDto,
   FormRecordDetailInputDto,
@@ -50,6 +53,7 @@ type NormalizedDetail = {
 type SchemaBundle = {
   form: RuntimeForm;
   physicalTables: PhysicalTable[];
+  formVersion: FormVersion;
 };
 
 @Injectable()
@@ -65,7 +69,9 @@ export class RuntimeFormService {
     );
 
     const normalized = this.normalizeAndValidate(
-      bundle.form,
+      this.snapshotToRuntimeForm(
+        bundle.formVersion.snapshot as unknown as FormSnapshot,
+      ),
       dto.mainData,
       dto.details ?? [],
     );
@@ -84,6 +90,8 @@ export class RuntimeFormService {
           recordNo,
           status,
           mainData: normalized.mainData as Prisma.InputJsonValue,
+          formVersion: bundle.formVersion.version,
+          formVersionId: bundle.formVersion.id,
           createdById: user.id,
           submittedAt: dto.submit ? new Date() : null,
         },
@@ -92,7 +100,9 @@ export class RuntimeFormService {
       await this.replaceAllPhysicalRows(tx, {
         tenantId,
         recordId: record.id,
-        form: bundle.form,
+        form: this.snapshotToRuntimeForm(
+          bundle.formVersion.snapshot as unknown as FormSnapshot,
+        ),
         physicalTables: bundle.physicalTables,
         mainData: normalized.mainData,
         details: normalized.details,
@@ -148,6 +158,7 @@ export class RuntimeFormService {
     const record = await this.prisma.formRecord.findFirst({
       where: { id, tenantId },
       include: {
+        formVersionRef: true,
         form: {
           include: {
             tables: {
@@ -165,14 +176,16 @@ export class RuntimeFormService {
 
     if (!record) throw new NotFoundException('单据不存在');
 
+    const runtimeForm = this.resolveRuntimeFormFromRecord(record);
     const physicalTables = await this.getPhysicalTablesOrThrow(
       tenantId,
       record.formId,
+      record.formVersionId,
     );
     const physicalData = await this.readPhysicalData(
       tenantId,
       record.id,
-      record.form,
+      runtimeForm,
       physicalTables,
     );
 
@@ -188,6 +201,7 @@ export class RuntimeFormService {
     const record = await this.prisma.formRecord.findFirst({
       where: { id, tenantId },
       include: {
+        formVersionRef: true,
         form: {
           include: {
             tables: {
@@ -204,17 +218,19 @@ export class RuntimeFormService {
       throw new ForbiddenException('只有草稿单据允许修改');
     }
 
+    const runtimeForm = this.resolveRuntimeFormFromRecord(record);
     const physicalTables = await this.getPhysicalTablesOrThrow(
       tenantId,
       record.formId,
+      record.formVersionId,
     );
 
     const normalizedMain = dto.mainData
-      ? this.normalizeMain(record.form, dto.mainData)
+      ? this.normalizeMain(runtimeForm, dto.mainData)
       : null;
 
     const normalizedDetails = dto.details
-      ? this.normalizeDetails(record.form, dto.details)
+      ? this.normalizeDetails(runtimeForm, dto.details)
       : null;
 
     await this.prisma.$transaction(async (tx) => {
@@ -230,7 +246,7 @@ export class RuntimeFormService {
         await this.replaceMainPhysicalRow(tx, {
           tenantId,
           recordId: id,
-          form: record.form,
+          form: runtimeForm,
           physicalTables,
           mainData: normalizedMain,
           userId: user.id,
@@ -241,7 +257,7 @@ export class RuntimeFormService {
         await this.replaceAllDetailPhysicalRows(tx, {
           tenantId,
           recordId: id,
-          form: record.form,
+          form: runtimeForm,
           physicalTables,
           details: normalizedDetails,
           userId: user.id,
@@ -338,23 +354,137 @@ export class RuntimeFormService {
 
     if (!form) throw new NotFoundException('启用表单不存在');
 
+    const formVersion = await this.findLatestPublishedFormVersion(
+      tenantId,
+      form.id,
+    );
+
     const physicalTables = await this.getPhysicalTablesOrThrow(
       tenantId,
       form.id,
+      formVersion.id,
     );
 
     return {
       form,
       physicalTables,
+      formVersion,
     };
   }
 
-  private async getPhysicalTablesOrThrow(tenantId: string, formId: string) {
-    const physicalTables = await this.prisma.formPhysicalTable.findMany({
+  private async findLatestPublishedFormVersion(
+    tenantId: string,
+    formId: string,
+  ) {
+    const formVersion = await this.prisma.formVersion.findFirst({
       where: {
         tenantId,
         formId,
-        status: PhysicalSchemaStatus.SYNCED,
+        status: FormVersionStatus.PUBLISHED,
+      },
+      orderBy: { version: 'desc' },
+    });
+
+    if (!formVersion) {
+      throw new BadRequestException('请先发布表单逻辑版本');
+    }
+
+    return formVersion;
+  }
+
+  private resolveRuntimeFormFromRecord(
+    record: Prisma.FormRecordGetPayload<{
+      include: {
+        formVersionRef: true;
+        form: {
+          include: {
+            tables: {
+              include: { fields: true };
+            };
+          };
+        };
+      };
+    }>,
+  ) {
+    if (record.formVersionRef?.snapshot) {
+      return this.snapshotToRuntimeForm(
+        record.formVersionRef.snapshot as unknown as FormSnapshot,
+      );
+    }
+
+    return record.form;
+  }
+
+  private snapshotToRuntimeForm(snapshot: FormSnapshot): RuntimeForm {
+    const now = new Date();
+
+    return {
+      id: snapshot.form.id,
+      tenantId: snapshot.form.tenantId,
+      scopeKey: `tenant:${snapshot.form.tenantId}`,
+      code: snapshot.form.code,
+      name: snapshot.form.name,
+      description: snapshot.form.description,
+      status: snapshot.form.status,
+      version: snapshot.form.version,
+      layout: snapshot.form.layout as Prisma.JsonValue,
+      config: snapshot.form.config as Prisma.JsonValue,
+      sort: 0,
+      createdAt: now,
+      updatedAt: now,
+      tables: snapshot.tables.map((table) => ({
+        id: table.id,
+        formId: snapshot.form.id,
+        parentId: table.parentId,
+        code: table.code,
+        name: table.name,
+        type: table.type,
+        layout: table.layout as Prisma.JsonValue,
+        config: table.config as Prisma.JsonValue,
+        sort: table.sort,
+        createdAt: now,
+        updatedAt: now,
+        fields: table.fields.map((field) => ({
+          id: field.id,
+          tableId: table.id,
+          code: field.code,
+          name: field.name,
+          type: field.type,
+          required: field.required,
+          unique: field.unique,
+          readonly: field.readonly,
+          hidden: field.hidden,
+          defaultValue: field.defaultValue as Prisma.JsonValue,
+          dictionaryCode: field.dictionaryCode,
+          dataSourceCode: field.dataSourceCode,
+          dataSourceMapping: field.dataSourceMapping as Prisma.JsonValue,
+          formula: field.formula as Prisma.JsonValue,
+          validationRules: field.validationRules as Prisma.JsonValue,
+          visibleWhen: field.visibleWhen as Prisma.JsonValue,
+          config: field.config as Prisma.JsonValue,
+          sort: field.sort,
+          createdAt: now,
+          updatedAt: now,
+        })),
+      })),
+    };
+  }
+
+  private async getPhysicalTablesOrThrow(
+    tenantId: string,
+    formId: string,
+    formVersionId?: string | null,
+  ) {
+    const baseWhere = {
+      tenantId,
+      formId,
+      status: PhysicalSchemaStatus.SYNCED,
+    };
+
+    let physicalTables = await this.prisma.formPhysicalTable.findMany({
+      where: {
+        ...baseWhere,
+        ...(formVersionId ? { formVersionId } : {}),
       },
       include: {
         columns: {
@@ -364,6 +494,19 @@ export class RuntimeFormService {
       },
       orderBy: { createdAt: 'asc' },
     });
+
+    if (physicalTables.length === 0 && formVersionId) {
+      physicalTables = await this.prisma.formPhysicalTable.findMany({
+        where: baseWhere,
+        include: {
+          columns: {
+            where: { isActive: true },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+    }
 
     if (physicalTables.length === 0) {
       throw new BadRequestException('请先发布表单并生成实体表');

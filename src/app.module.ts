@@ -15,6 +15,7 @@ import { MetadataModule } from './metadata/metadata.module';
 import { RuntimeFormModule } from './runtime-form/runtime-form.module';
 import { FormSchemaProvisionModule } from './form-schema-provision/form-schema-provision.module';
 import { DocumentFlowModule } from './document-flow/document-flow.module';
+import { FormSnapshotModule } from './form-snapshot/form-snapshot.module';
 
 @Module({
   imports: [
@@ -32,6 +33,7 @@ import { DocumentFlowModule } from './document-flow/document-flow.module';
     RuntimeFormModule,
     FormSchemaProvisionModule,
     DocumentFlowModule,
+    FormSnapshotModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

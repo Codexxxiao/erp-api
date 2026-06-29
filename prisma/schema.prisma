@@ -30,6 +30,7 @@ model Tenant {
   dataSources  DataSource[]
   forms        FormDefinition[]
   formRecords  FormRecord[]
+  formVersions FormVersion[]
 }
 
 model User {
@@ -347,6 +348,7 @@ model FormDefinition {
   tenant  Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   tables  FormTable[]
   records FormRecord[]
+  versions FormVersion[]
 
   @@unique([scopeKey, code])
   @@index([tenantId])
@@ -427,16 +429,20 @@ model FormRecord {
   canceledAt  DateTime?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+  formVersion   Int     @default(1)
+  formVersionId String?
 
-  tenant  Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  form    FormDefinition     @relation(fields: [formId], references: [id], onDelete: Restrict)
-  details FormRecordDetail[]
+  tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  form           FormDefinition     @relation(fields: [formId], references: [id], onDelete: Restrict)
+  formVersionRef FormVersion?       @relation(fields: [formVersionId], references: [id], onDelete: SetNull)
+  details        FormRecordDetail[]
 
   @@unique([tenantId, recordNo])
   @@index([tenantId])
   @@index([formId])
   @@index([formCode])
   @@index([status])
+  @@index([formVersionId])
 }
 
 model FormRecordDetail {
@@ -476,13 +482,17 @@ model FormPhysicalTable {
   lastError   String?
   createdAt   DateTime             @default(now())
   updatedAt   DateTime             @updatedAt
+  formVersionId String?
 
   columns FormPhysicalColumn[]
+
+  formVersionRef FormVersion? @relation(fields: [formVersionId], references: [id], onDelete: SetNull)
 
   @@unique([tableId])
   @@unique([tenantId, tableName])
   @@index([tenantId])
   @@index([formId])
+  @@index([formVersionId])
 }
 
 model FormPhysicalColumn {
@@ -636,4 +646,34 @@ model DocumentFlowExecution {
   @@index([linkId])
   @@index([sourceRecordId])
   @@index([targetRecordId])
+}
+
+
+enum FormVersionStatus {
+  PUBLISHED
+  DEPRECATED
+}
+
+model FormVersion {
+  id            String            @id @default(uuid())
+  tenantId      String
+  formId        String
+  formCode      String
+  version       Int
+  status        FormVersionStatus @default(PUBLISHED)
+  snapshot      Json
+  publishedById String
+  publishedAt   DateTime          @default(now())
+  createdAt     DateTime          @default(now())
+
+  records        FormRecord[]
+  physicalTables FormPhysicalTable[]
+  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  form   FormDefinition @relation(fields: [formId], references: [id], onDelete: Cascade)
+
+  @@unique([formId, version])
+  @@unique([tenantId, formCode, version])
+  @@index([tenantId])
+  @@index([formId])
+  @@index([formCode])
 }
