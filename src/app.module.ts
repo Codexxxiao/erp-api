@@ -11,6 +11,7 @@ import { PermissionModule } from './permission/permission.module';
 import { MenuModule } from './menu/menu.module';
 import { DictionaryModule } from './dictionary/dictionary.module';
 import { DatasourceModule } from './datasource/datasource.module';
+import { MetadataModule } from './metadata/metadata.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { DatasourceModule } from './datasource/datasource.module';
     MenuModule,
     DictionaryModule,
     DatasourceModule,
+    MetadataModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

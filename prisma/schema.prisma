@@ -28,6 +28,7 @@ model Tenant {
   menus Menu[]
   dictionaries Dictionary[]
   dataSources DataSource[]
+  forms FormDefinition[]
 }
 
 model User {
@@ -298,4 +299,108 @@ model DataSourceField {
 
   @@unique([dataSourceId, key])
   @@index([dataSourceId])
+}
+
+
+enum FormStatus {
+  DRAFT
+  ENABLED
+  DISABLED
+}
+
+enum FormTableType {
+  MAIN
+  SUB
+}
+
+enum FormFieldType {
+  TEXT
+  TEXTAREA
+  NUMBER
+  DECIMAL
+  MONEY
+  DATE
+  DATETIME
+  BOOLEAN
+  DICTIONARY
+  DATASOURCE
+  USER
+  ATTACHMENT
+  IMAGE
+}
+
+model FormDefinition {
+  id          String     @id @default(uuid())
+  tenantId    String?
+  scopeKey    String
+  code        String
+  name        String
+  description String?
+  status      FormStatus @default(DRAFT)
+  version     Int        @default(1)
+  layout      Json?
+  config      Json?
+  sort        Int        @default(0)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tables FormTable[]
+
+  @@unique([scopeKey, code])
+  @@index([tenantId])
+  @@index([scopeKey])
+  @@index([code])
+}
+
+model FormTable {
+  id        String        @id @default(uuid())
+  formId    String
+  parentId  String?
+  code      String
+  name      String
+  type      FormTableType
+  layout    Json?
+  config    Json?
+  sort      Int           @default(0)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  form     FormDefinition @relation(fields: [formId], references: [id], onDelete: Cascade)
+  parent   FormTable?     @relation("FormTableTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children FormTable[]    @relation("FormTableTree")
+  fields   FormField[]
+
+  @@unique([formId, code])
+  @@index([formId])
+  @@index([parentId])
+}
+
+model FormField {
+  id                 String        @id @default(uuid())
+  tableId            String
+  code               String
+  name               String
+  type               FormFieldType
+  required           Boolean       @default(false)
+  unique             Boolean       @default(false)
+  readonly           Boolean       @default(false)
+  hidden             Boolean       @default(false)
+  defaultValue       Json?
+  dictionaryCode     String?
+  dataSourceCode     String?
+  dataSourceMapping  Json?
+  formula            Json?
+  validationRules    Json?
+  visibleWhen        Json?
+  config             Json?
+  sort               Int           @default(0)
+  createdAt          DateTime      @default(now())
+  updatedAt          DateTime      @updatedAt
+
+  table FormTable @relation(fields: [tableId], references: [id], onDelete: Cascade)
+
+  @@unique([tableId, code])
+  @@index([tableId])
+  @@index([code])
 }
