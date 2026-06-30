@@ -31,6 +31,7 @@ model Tenant {
   forms        FormDefinition[]
   formRecords  FormRecord[]
   formVersions FormVersion[]
+  workflowDefinitions WorkflowDefinition[]
 }
 
 model User {
@@ -676,4 +677,185 @@ model FormVersion {
   @@index([tenantId])
   @@index([formId])
   @@index([formCode])
+}
+
+enum WorkflowDefinitionStatus {
+  DRAFT
+  ENABLED
+  DISABLED
+}
+
+enum WorkflowNodeType {
+  START
+  APPROVAL
+  END
+}
+
+enum WorkflowApproverType {
+  USER
+  ROLE
+  TENANT_ADMIN
+}
+
+enum WorkflowApproveMode {
+  ANY
+  ALL
+}
+
+enum WorkflowInstanceStatus {
+  RUNNING
+  APPROVED
+  REJECTED
+  CANCELED
+}
+
+enum WorkflowTaskStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
+}
+
+enum WorkflowActionType {
+  START
+  APPROVE
+  REJECT
+  CANCEL
+}
+
+model WorkflowDefinition {
+  id            String                   @id @default(uuid())
+  tenantId      String
+  code          String
+  name          String
+  formId        String
+  formVersionId String?
+  status        WorkflowDefinitionStatus @default(DRAFT)
+  description   String?
+  config        Json?
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  nodes       WorkflowNode[]
+  transitions WorkflowTransition[]
+  instances   WorkflowInstance[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([formId])
+  @@index([formVersionId])
+}
+
+model WorkflowNode {
+  id             String                @id @default(uuid())
+  definitionId   String
+  code           String
+  name           String
+  type           WorkflowNodeType
+  approverType   WorkflowApproverType?
+  approverUserId String?
+  approverRoleId String?
+  approveMode    WorkflowApproveMode  @default(ANY)
+  sort           Int                   @default(0)
+  config         Json?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  definition       WorkflowDefinition  @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  outgoing         WorkflowTransition[] @relation("WorkflowTransitionSource")
+  incoming         WorkflowTransition[] @relation("WorkflowTransitionTarget")
+  tasks            WorkflowTask[]
+  currentInstances WorkflowInstance[]   @relation("WorkflowCurrentNode")
+
+  @@unique([definitionId, code])
+  @@index([definitionId])
+}
+
+model WorkflowTransition {
+  id           String   @id @default(uuid())
+  definitionId String
+  sourceNodeId String
+  targetNodeId String
+  condition    Json?
+  sort         Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  definition WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  sourceNode WorkflowNode       @relation("WorkflowTransitionSource", fields: [sourceNodeId], references: [id], onDelete: Cascade)
+  targetNode WorkflowNode       @relation("WorkflowTransitionTarget", fields: [targetNodeId], references: [id], onDelete: Cascade)
+
+  @@index([definitionId])
+  @@index([sourceNodeId])
+  @@index([targetNodeId])
+}
+
+model WorkflowInstance {
+  id            String                 @id @default(uuid())
+  tenantId      String
+  definitionId  String
+  formId        String
+  formVersionId String?
+  recordId      String
+  activeKey     String?
+  status        WorkflowInstanceStatus @default(RUNNING)
+  currentNodeId String?
+  startedById   String
+  endedAt       DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  definition  WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  currentNode WorkflowNode?      @relation("WorkflowCurrentNode", fields: [currentNodeId], references: [id], onDelete: SetNull)
+  tasks       WorkflowTask[]
+  logs        WorkflowActionLog[]
+
+  @@unique([tenantId, activeKey])
+  @@index([tenantId])
+  @@index([definitionId])
+  @@index([recordId])
+  @@index([status])
+}
+
+model WorkflowTask {
+  id             String             @id @default(uuid())
+  tenantId       String
+  instanceId     String
+  nodeId         String
+  assigneeUserId String
+  status         WorkflowTaskStatus @default(PENDING)
+  comment        String?
+  actedAt        DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  instance WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  node     WorkflowNode     @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  logs     WorkflowActionLog[]
+
+  @@index([tenantId])
+  @@index([instanceId])
+  @@index([nodeId])
+  @@index([assigneeUserId])
+  @@index([status])
+}
+
+model WorkflowActionLog {
+  id         String             @id @default(uuid())
+  tenantId   String
+  instanceId String
+  taskId     String?
+  nodeId     String?
+  action     WorkflowActionType
+  userId     String
+  comment    String?
+  createdAt  DateTime           @default(now())
+
+  instance WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  task     WorkflowTask?    @relation(fields: [taskId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([instanceId])
+  @@index([taskId])
+  @@index([userId])
 }

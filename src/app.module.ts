@@ -16,6 +16,7 @@ import { RuntimeFormModule } from './runtime-form/runtime-form.module';
 import { FormSchemaProvisionModule } from './form-schema-provision/form-schema-provision.module';
 import { DocumentFlowModule } from './document-flow/document-flow.module';
 import { FormSnapshotModule } from './form-snapshot/form-snapshot.module';
+import { WorkflowModule } from './workflow/workflow.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { FormSnapshotModule } from './form-snapshot/form-snapshot.module';
     FormSchemaProvisionModule,
     DocumentFlowModule,
     FormSnapshotModule,
+    WorkflowModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
