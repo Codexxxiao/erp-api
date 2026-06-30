@@ -1276,3 +1276,43 @@ model PackageTenantVersion {
   @@index([lastInstallId])
   @@index([status])
 }
+
+enum PackageUpgradeStatus {
+  UPGRADING
+  SUCCESS
+  FAILED
+}
+
+enum PackageUpgradeConflictPolicy {
+  FAIL
+  OVERWRITE
+}
+
+model PackageUpgrade {
+  id             String                       @id @default(uuid())
+  tenantId       String
+  packageId      String
+  fromVersionId  String
+  fromVersionNo  Int
+  toVersionId    String
+  toVersionNo    Int
+  status         PackageUpgradeStatus         @default(UPGRADING)
+  conflictPolicy PackageUpgradeConflictPolicy @default(FAIL)
+  installId      String?
+  preview        Json?
+  summary        Json?
+  error          String?
+  upgradedById   String?
+  startedAt      DateTime                     @default(now())
+  finishedAt     DateTime?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+
+  @@index([tenantId])
+  @@index([packageId])
+  @@index([fromVersionId])
+  @@index([toVersionId])
+  @@index([installId])
+  @@index([status])
+  @@index([createdAt])
+}

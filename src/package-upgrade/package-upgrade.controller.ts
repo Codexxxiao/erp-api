@@ -3,6 +3,11 @@ import { JwtAuthGuard } from '../auth/jwt/jwt.guard';
 import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import { PreviewPackageUpgradeDto } from './dto/preview-package-upgrade.dto';
 import { PackageUpgradeService } from './package-upgrade.service';
+import { Query } from '@nestjs/common';
+import { CurrentUserDecorator } from '../common/decorators/current-user.decorator';
+import type { CurrentUser } from '../common/types/current-user';
+import { ExecutePackageUpgradeDto } from './dto/execute-package-upgrade.dto';
+import { QueryPackageUpgradeDto } from './dto/query-package-upgrade.dto';
 
 @UseGuards(JwtAuthGuard, PlatformAdminGuard)
 @Controller('admin/package-upgrades')
@@ -25,5 +30,23 @@ export class PackageUpgradeController {
   @Post('preview')
   preview(@Body() dto: PreviewPackageUpgradeDto) {
     return this.service.preview(dto);
+  }
+
+  @Post('execute')
+  execute(
+    @CurrentUserDecorator() user: CurrentUser,
+    @Body() dto: ExecutePackageUpgradeDto,
+  ) {
+    return this.service.execute(user, dto);
+  }
+
+  @Get('records')
+  findMany(@Query() query: QueryPackageUpgradeDto) {
+    return this.service.findMany(query);
+  }
+
+  @Get('records/:id')
+  findOne(@Param('id') id: string) {
+    return this.service.findOne(id);
   }
 }

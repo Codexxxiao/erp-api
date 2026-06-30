@@ -9,9 +9,16 @@ import {
   PackageAssetType,
   PackageVersionStatus,
   Prisma,
+  PackageInstallConflictPolicy,
+  PackageUpgradeConflictPolicy,
+  PackageUpgradeStatus,
 } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PreviewPackageUpgradeDto } from './dto/preview-package-upgrade.dto';
+import type { CurrentUser } from '../common/types/current-user';
+import { PackageInstallService } from '../package-install/package-install.service';
+import { ExecutePackageUpgradeDto } from './dto/execute-package-upgrade.dto';
+import { QueryPackageUpgradeDto } from './dto/query-package-upgrade.dto';
 
 type PackageVersionWithAssets = Prisma.PackageVersionGetPayload<{
   include: {
@@ -24,7 +31,132 @@ type DiffAction = 'ADDED' | 'UPDATED' | 'REMOVED' | 'UNCHANGED' | 'CONFLICT';
 
 @Injectable()
 export class PackageUpgradeService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly packageInstallService: PackageInstallService,
+  ) {}
+
+  findMany(query: QueryPackageUpgradeDto) {
+    return this.prisma.packageUpgrade.findMany({
+      where: {
+        tenantId: query.tenantId,
+        packageId: query.packageId,
+        status: query.status,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async findOne(id: string) {
+    const item = await this.prisma.packageUpgrade.findUnique({
+      where: { id },
+    });
+
+    if (!item) throw new NotFoundException('套餐升级记录不存在');
+    return item;
+  }
+
+  async execute(user: CurrentUser, dto: ExecutePackageUpgradeDto) {
+    const conflictPolicy =
+      dto.conflictPolicy ?? PackageUpgradeConflictPolicy.FAIL;
+
+    const preview = await this.preview({
+      tenantId: dto.tenantId,
+      packageId: dto.packageId,
+      targetVersionId: dto.targetVersionId,
+    });
+
+    const conflictCount = Number(preview.summary.conflicts ?? 0);
+
+    const upgrade = await this.prisma.packageUpgrade.create({
+      data: {
+        tenantId: dto.tenantId,
+        packageId: dto.packageId,
+        fromVersionId: preview.currentVersion.id,
+        fromVersionNo: preview.currentVersion.versionNo,
+        toVersionId: preview.targetVersion.id,
+        toVersionNo: preview.targetVersion.versionNo,
+        status: PackageUpgradeStatus.UPGRADING,
+        conflictPolicy,
+        preview: this.toJson(preview),
+        upgradedById: user.id,
+      },
+    });
+
+    try {
+      if (
+        conflictCount > 0 &&
+        conflictPolicy === PackageUpgradeConflictPolicy.FAIL
+      ) {
+        return this.failUpgrade(
+          upgrade.id,
+          `存在 ${conflictCount} 个冲突资产，请先处理冲突或选择 OVERWRITE`,
+        );
+      }
+
+      const install = await this.packageInstallService.install(user, {
+        tenantId: dto.tenantId,
+        packageVersionId: preview.targetVersion.id,
+        conflictPolicy: PackageInstallConflictPolicy.OVERWRITE,
+      });
+
+      const summary = {
+        preview: preview.summary,
+        removedAssetPolicy: 'KEEP',
+        install: {
+          id: install.id,
+          status: install.status,
+          summary: install.summary,
+        },
+      };
+
+      const success = await this.prisma.packageUpgrade.update({
+        where: { id: upgrade.id },
+        data: {
+          status: PackageUpgradeStatus.SUCCESS,
+          installId: install.id,
+          summary: this.toJson(summary),
+          finishedAt: new Date(),
+        },
+      });
+
+      return {
+        ...success,
+        install,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '套餐升级失败';
+
+      await this.prisma.packageUpgrade.update({
+        where: { id: upgrade.id },
+        data: {
+          status: PackageUpgradeStatus.FAILED,
+          error: message,
+          finishedAt: new Date(),
+        },
+      });
+
+      throw error;
+    }
+  }
+
+  private async failUpgrade(id: string, message: string) {
+    const failed = await this.prisma.packageUpgrade.update({
+      where: { id },
+      data: {
+        status: PackageUpgradeStatus.FAILED,
+        error: message,
+        finishedAt: new Date(),
+      },
+    });
+
+    throw new BadRequestException(failed.error);
+  }
+
+  private toJson(value: unknown): Prisma.InputJsonValue | undefined {
+    if (value === undefined) return undefined;
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
 
   async findTenantPackages(tenantId: string) {
     await this.ensureTenant(tenantId);
