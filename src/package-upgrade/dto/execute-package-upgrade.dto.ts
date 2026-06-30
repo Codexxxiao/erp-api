@@ -15,4 +15,8 @@ export class ExecutePackageUpgradeDto {
   @IsOptional()
   @IsEnum(PackageUpgradeConflictPolicy)
   conflictPolicy?: PackageUpgradeConflictPolicy;
+
+  @IsOptional()
+  @IsString()
+  previewSignature?: string;
 }

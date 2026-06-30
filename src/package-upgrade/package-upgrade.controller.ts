@@ -1,9 +1,16 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt/jwt.guard';
 import { PlatformAdminGuard } from '../auth/guards/platform-admin.guard';
 import { PreviewPackageUpgradeDto } from './dto/preview-package-upgrade.dto';
 import { PackageUpgradeService } from './package-upgrade.service';
-import { Query } from '@nestjs/common';
 import { CurrentUserDecorator } from '../common/decorators/current-user.decorator';
 import type { CurrentUser } from '../common/types/current-user';
 import { ExecutePackageUpgradeDto } from './dto/execute-package-upgrade.dto';
@@ -43,6 +50,11 @@ export class PackageUpgradeController {
   @Get('records')
   findMany(@Query() query: QueryPackageUpgradeDto) {
     return this.service.findMany(query);
+  }
+
+  @Get('records/:id/logs')
+  findLogs(@Param('id') id: string) {
+    return this.service.findLogs(id);
   }
 
   @Get('records/:id')

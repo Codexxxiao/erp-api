@@ -12,6 +12,8 @@ import {
   PackageInstallConflictPolicy,
   PackageUpgradeConflictPolicy,
   PackageUpgradeStatus,
+  PackageTenantVersionStatus,
+  PackageUpgradeLogLevel,
 } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { PreviewPackageUpgradeDto } from './dto/preview-package-upgrade.dto';
@@ -44,55 +46,107 @@ export class PackageUpgradeService {
         status: query.status,
       },
       orderBy: { createdAt: 'desc' },
+      include: {
+        _count: { select: { logs: true } },
+      },
     });
   }
 
   async findOne(id: string) {
     const item = await this.prisma.packageUpgrade.findUnique({
       where: { id },
+      include: {
+        logs: { orderBy: { createdAt: 'asc' } },
+      },
     });
 
     if (!item) throw new NotFoundException('套餐升级记录不存在');
     return item;
   }
 
+  async findLogs(id: string) {
+    await this.findOne(id);
+
+    return this.prisma.packageUpgradeLog.findMany({
+      where: { upgradeId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
   async execute(user: CurrentUser, dto: ExecutePackageUpgradeDto) {
     const conflictPolicy =
       dto.conflictPolicy ?? PackageUpgradeConflictPolicy.FAIL;
 
-    const preview = await this.preview({
-      tenantId: dto.tenantId,
-      packageId: dto.packageId,
-      targetVersionId: dto.targetVersionId,
-    });
-
-    const conflictCount = Number(preview.summary.conflicts ?? 0);
-
-    const upgrade = await this.prisma.packageUpgrade.create({
-      data: {
-        tenantId: dto.tenantId,
-        packageId: dto.packageId,
-        fromVersionId: preview.currentVersion.id,
-        fromVersionNo: preview.currentVersion.versionNo,
-        toVersionId: preview.targetVersion.id,
-        toVersionNo: preview.targetVersion.versionNo,
-        status: PackageUpgradeStatus.UPGRADING,
-        conflictPolicy,
-        preview: this.toJson(preview),
-        upgradedById: user.id,
-      },
-    });
+    let locked = false;
+    let upgradeId: string | undefined;
 
     try {
-      if (
-        conflictCount > 0 &&
-        conflictPolicy === PackageUpgradeConflictPolicy.FAIL
-      ) {
-        return this.failUpgrade(
-          upgrade.id,
-          `存在 ${conflictCount} 个冲突资产，请先处理冲突或选择 OVERWRITE`,
+      await this.acquireUpgradeLock(dto.tenantId, dto.packageId);
+      locked = true;
+
+      const preview = await this.preview({
+        tenantId: dto.tenantId,
+        packageId: dto.packageId,
+        targetVersionId: dto.targetVersionId,
+      });
+
+      const upgrade = await this.prisma.packageUpgrade.create({
+        data: {
+          tenantId: dto.tenantId,
+          packageId: dto.packageId,
+          fromVersionId: preview.currentVersion.id,
+          fromVersionNo: preview.currentVersion.versionNo,
+          toVersionId: preview.targetVersion.id,
+          toVersionNo: preview.targetVersion.versionNo,
+          status: PackageUpgradeStatus.UPGRADING,
+          conflictPolicy,
+          preview: this.toJson(preview),
+          upgradedById: user.id,
+        },
+      });
+
+      upgradeId = upgrade.id;
+
+      await this.addUpgradeLog(
+        upgradeId,
+        PackageUpgradeLogLevel.INFO,
+        '开始升级套餐',
+        {
+          conflictPolicy,
+          previewSignature: preview.signature,
+          clientPreviewSignature: dto.previewSignature,
+        },
+      );
+
+      if (dto.previewSignature && dto.previewSignature !== preview.signature) {
+        throw new BadRequestException('升级预览已过期，请重新预览后再执行');
+      }
+
+      this.assertConflictPolicy(preview, conflictPolicy);
+
+      const secondPreview = await this.preview({
+        tenantId: dto.tenantId,
+        packageId: dto.packageId,
+        targetVersionId: preview.targetVersion.id,
+      });
+
+      await this.addUpgradeLog(
+        upgradeId,
+        PackageUpgradeLogLevel.INFO,
+        '执行前二次校验完成',
+        {
+          firstSignature: preview.signature,
+          secondSignature: secondPreview.signature,
+          summary: secondPreview.summary,
+        },
+      );
+
+      if (preview.signature !== secondPreview.signature) {
+        throw new BadRequestException(
+          '升级执行前数据发生变化，请重新预览后再执行',
         );
       }
+
+      this.assertConflictPolicy(secondPreview, conflictPolicy);
 
       const install = await this.packageInstallService.install(user, {
         tenantId: dto.tenantId,
@@ -100,8 +154,18 @@ export class PackageUpgradeService {
         conflictPolicy: PackageInstallConflictPolicy.OVERWRITE,
       });
 
+      await this.addUpgradeLog(
+        upgradeId,
+        PackageUpgradeLogLevel.INFO,
+        '套餐安装流程执行成功',
+        {
+          installId: install.id,
+          installStatus: install.status,
+        },
+      );
+
       const summary = {
-        preview: preview.summary,
+        preview: secondPreview.summary,
         removedAssetPolicy: 'KEEP',
         install: {
           id: install.id,
@@ -110,8 +174,8 @@ export class PackageUpgradeService {
         },
       };
 
-      const success = await this.prisma.packageUpgrade.update({
-        where: { id: upgrade.id },
+      await this.prisma.packageUpgrade.update({
+        where: { id: upgradeId },
         data: {
           status: PackageUpgradeStatus.SUCCESS,
           installId: install.id,
@@ -120,39 +184,174 @@ export class PackageUpgradeService {
         },
       });
 
+      await this.addUpgradeLog(
+        upgradeId,
+        PackageUpgradeLogLevel.INFO,
+        '套餐升级完成',
+        summary,
+      );
+
       return {
-        ...success,
+        ...(await this.findOne(upgradeId)),
         install,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : '套餐升级失败';
 
-      await this.prisma.packageUpgrade.update({
-        where: { id: upgrade.id },
-        data: {
-          status: PackageUpgradeStatus.FAILED,
-          error: message,
-          finishedAt: new Date(),
-        },
-      });
+      if (upgradeId) {
+        await this.addUpgradeLog(
+          upgradeId,
+          PackageUpgradeLogLevel.ERROR,
+          message,
+          {
+            name: error instanceof Error ? error.name : undefined,
+            message,
+          },
+        );
+
+        await this.prisma.packageUpgrade.update({
+          where: { id: upgradeId },
+          data: {
+            status: PackageUpgradeStatus.FAILED,
+            error: message,
+            finishedAt: new Date(),
+          },
+        });
+      }
+
+      if (locked) {
+        await this.releaseUpgradeLock(dto.tenantId, dto.packageId);
+      }
 
       throw error;
     }
   }
-
-  private async failUpgrade(id: string, message: string) {
-    const failed = await this.prisma.packageUpgrade.update({
-      where: { id },
+  private async acquireUpgradeLock(tenantId: string, packageId: string) {
+    const updated = await this.prisma.packageTenantVersion.updateMany({
+      where: {
+        tenantId,
+        packageId,
+        status: {
+          notIn: [
+            PackageTenantVersionStatus.UPGRADING,
+            PackageTenantVersionStatus.DISABLED,
+          ],
+        },
+      },
       data: {
-        status: PackageUpgradeStatus.FAILED,
-        error: message,
-        finishedAt: new Date(),
+        status: PackageTenantVersionStatus.UPGRADING,
       },
     });
 
-    throw new BadRequestException(failed.error);
+    if (updated.count === 1) return;
+
+    const current = await this.prisma.packageTenantVersion.findUnique({
+      where: {
+        tenantId_packageId: {
+          tenantId,
+          packageId,
+        },
+      },
+    });
+
+    if (!current) throw new NotFoundException('租户尚未安装该套餐');
+
+    if (current.status === PackageTenantVersionStatus.UPGRADING) {
+      throw new BadRequestException('该租户套餐正在升级中，请稍后再试');
+    }
+
+    if (current.status === PackageTenantVersionStatus.DISABLED) {
+      throw new BadRequestException('该租户套餐已禁用，不能升级');
+    }
+
+    throw new BadRequestException('获取套餐升级锁失败，请稍后重试');
   }
 
+  private async releaseUpgradeLock(tenantId: string, packageId: string) {
+    await this.prisma.packageTenantVersion.updateMany({
+      where: {
+        tenantId,
+        packageId,
+        status: PackageTenantVersionStatus.UPGRADING,
+      },
+      data: {
+        status: PackageTenantVersionStatus.INSTALLED,
+      },
+    });
+  }
+
+  private assertConflictPolicy(
+    preview: { summary: Record<string, number> },
+    conflictPolicy: PackageUpgradeConflictPolicy,
+  ) {
+    const conflictCount = Number(preview.summary.conflicts ?? 0);
+
+    if (
+      conflictCount > 0 &&
+      conflictPolicy === PackageUpgradeConflictPolicy.FAIL
+    ) {
+      throw new BadRequestException(
+        `存在 ${conflictCount} 个冲突资产，请先处理冲突或选择 OVERWRITE`,
+      );
+    }
+  }
+
+  private async addUpgradeLog(
+    upgradeId: string,
+    level: PackageUpgradeLogLevel,
+    message: string,
+    detail?: unknown,
+  ) {
+    return this.prisma.packageUpgradeLog.create({
+      data: {
+        upgradeId,
+        level,
+        message,
+        detail: this.toJson(detail),
+      },
+    });
+  }
+
+  private buildPreviewSignature(preview: {
+    tenantPackage: { tenantId: string; packageId: string };
+    currentVersion: { id: string; versionNo: number };
+    targetVersion: { id: string; versionNo: number };
+    summary: Record<string, number>;
+    items: Array<{
+      key: string;
+      action: string;
+      baseAction: string;
+      type?: PackageAssetType;
+      assetCode?: string | null;
+      oldPackageAssetId?: string;
+      newPackageAssetId?: string;
+      targetAssetId?: string;
+      hasConflict: boolean;
+    }>;
+  }) {
+    return this.snapshotHash({
+      tenantId: preview.tenantPackage.tenantId,
+      packageId: preview.tenantPackage.packageId,
+      currentVersionId: preview.currentVersion.id,
+      currentVersionNo: preview.currentVersion.versionNo,
+      targetVersionId: preview.targetVersion.id,
+      targetVersionNo: preview.targetVersion.versionNo,
+      summary: preview.summary,
+      items: preview.items
+        .map((item) => ({
+          key: item.key,
+          action: item.action,
+          baseAction: item.baseAction,
+          type: item.type,
+          assetCode: item.assetCode,
+          oldPackageAssetId: item.oldPackageAssetId,
+          newPackageAssetId: item.newPackageAssetId,
+          targetAssetId: item.targetAssetId,
+          hasConflict: item.hasConflict,
+        }))
+        .sort((a, b) => a.key.localeCompare(b.key)),
+    });
+  }
   private toJson(value: unknown): Prisma.InputJsonValue | undefined {
     if (value === undefined) return undefined;
     return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -307,7 +506,7 @@ export class PackageUpgradeService {
       } as Record<string, number>,
     );
 
-    return {
+    const result = {
       tenantPackage: installed,
       currentVersion: {
         id: currentVersion.id,
@@ -322,6 +521,11 @@ export class PackageUpgradeService {
       summary,
       executable: summary.conflicts === 0,
       items,
+    };
+
+    return {
+      ...result,
+      signature: this.buildPreviewSignature(result),
     };
   }
 

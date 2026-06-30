@@ -1249,11 +1249,6 @@ model PackageInstallLog {
   @@index([createdAt])
 }
 
-enum PackageTenantVersionStatus {
-  INSTALLED
-  UPGRADE_AVAILABLE
-  DISABLED
-}
 
 model PackageTenantVersion {
   id               String                     @id @default(uuid())
@@ -1308,11 +1303,41 @@ model PackageUpgrade {
   createdAt      DateTime                     @default(now())
   updatedAt      DateTime                     @updatedAt
 
+  logs PackageUpgradeLog[]
+
   @@index([tenantId])
   @@index([packageId])
   @@index([fromVersionId])
   @@index([toVersionId])
   @@index([installId])
   @@index([status])
+  @@index([createdAt])
+}
+
+enum PackageTenantVersionStatus {
+  INSTALLED
+  UPGRADE_AVAILABLE
+  UPGRADING
+  DISABLED
+}
+
+enum PackageUpgradeLogLevel {
+  INFO
+  WARNING
+  ERROR
+}
+
+model PackageUpgradeLog {
+  id        String                 @id @default(uuid())
+  upgradeId String
+  level     PackageUpgradeLogLevel @default(INFO)
+  message   String
+  detail    Json?
+  createdAt DateTime               @default(now())
+
+  upgrade PackageUpgrade @relation(fields: [upgradeId], references: [id], onDelete: Cascade)
+
+  @@index([upgradeId])
+  @@index([level])
   @@index([createdAt])
 }
