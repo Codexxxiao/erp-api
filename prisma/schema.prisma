@@ -1157,3 +1157,94 @@ model PackageAsset {
   @@index([assetId])
   @@index([sourceTenantId])
 }
+
+enum PackageInstallStatus {
+  INSTALLING
+  SUCCESS
+  FAILED
+}
+
+enum PackageInstallConflictPolicy {
+  FAIL
+  SKIP
+  OVERWRITE
+}
+
+enum PackageInstallAssetStatus {
+  SUCCESS
+  SKIPPED
+  FAILED
+}
+
+enum PackageInstallAssetAction {
+  CREATED
+  UPDATED
+  SKIPPED
+}
+
+enum PackageInstallLogLevel {
+  INFO
+  WARNING
+  ERROR
+}
+
+model PackageInstall {
+  id              String                       @id @default(uuid())
+  tenantId        String
+  packageVersionId String
+  status          PackageInstallStatus         @default(INSTALLING)
+  conflictPolicy  PackageInstallConflictPolicy @default(FAIL)
+  installedById   String?
+  startedAt       DateTime                     @default(now())
+  finishedAt      DateTime?
+  error           String?
+  summary         Json?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  assets PackageInstallAsset[]
+  logs   PackageInstallLog[]
+
+  @@index([tenantId])
+  @@index([packageVersionId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model PackageInstallAsset {
+  id             String                    @id @default(uuid())
+  installId      String
+  packageAssetId String?
+  type           PackageAssetType
+  sourceAssetId  String
+  targetAssetId  String?
+  assetCode      String?
+  status         PackageInstallAssetStatus
+  action         PackageInstallAssetAction?
+  error          String?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  install PackageInstall @relation(fields: [installId], references: [id], onDelete: Cascade)
+
+  @@index([installId])
+  @@index([packageAssetId])
+  @@index([type])
+  @@index([sourceAssetId])
+  @@index([targetAssetId])
+}
+
+model PackageInstallLog {
+  id        String                 @id @default(uuid())
+  installId String
+  level     PackageInstallLogLevel @default(INFO)
+  message   String
+  detail    Json?
+  createdAt DateTime               @default(now())
+
+  install PackageInstall @relation(fields: [installId], references: [id], onDelete: Cascade)
+
+  @@index([installId])
+  @@index([level])
+  @@index([createdAt])
+}

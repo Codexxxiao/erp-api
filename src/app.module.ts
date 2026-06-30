@@ -21,6 +21,7 @@ import { MessageModule } from './message/message.module';
 import { ListViewModule } from './list-view/list-view.module';
 import { ExportModule } from './export/export.module';
 import { PackageModule } from './package/package.module';
+import { PackageInstallModule } from './package-install/package-install.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { PackageModule } from './package/package.module';
     ListViewModule,
     ExportModule,
     PackageModule,
+    PackageInstallModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

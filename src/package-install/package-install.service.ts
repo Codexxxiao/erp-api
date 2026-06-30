@@ -1,0 +1,982 @@
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  PackageAsset,
+  PackageAssetType,
+  PackageInstallAssetAction,
+  PackageInstallAssetStatus,
+  PackageInstallConflictPolicy,
+  PackageInstallLogLevel,
+  PackageInstallStatus,
+  PackageVersionStatus,
+  Prisma,
+} from '../generated/prisma/client';
+import type { CurrentUser } from '../common/types/current-user';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreatePackageInstallDto } from './dto/create-package-install.dto';
+import { QueryPackageInstallDto } from './dto/query-package-install.dto';
+
+type Tx = Prisma.TransactionClient;
+
+type InstallContext = {
+  tenantId: string;
+  userId: string;
+  conflictPolicy: PackageInstallConflictPolicy;
+  assetIdMap: Map<string, string>;
+  formIdMap: Map<string, string>;
+  formCodeMap: Map<string, string>;
+  formVersionIdMap: Map<string, string>;
+  tableIdMap: Map<string, string>;
+  fieldIdMap: Map<string, string>;
+  menuIdMap: Map<string, string>;
+};
+
+type ExistingTarget = { id: string } | null;
+
+@Injectable()
+export class PackageInstallService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async preview(dto: CreatePackageInstallDto) {
+    const tenant = await this.ensureTenant(dto.tenantId);
+    const version = await this.loadPublishedVersion(dto.packageVersionId);
+    const assets = await Promise.all(
+      version.assets.map(async (asset) => {
+        const existing = await this.findExistingTarget(
+          this.prisma,
+          dto.tenantId,
+          asset,
+        );
+        return {
+          packageAssetId: asset.id,
+          type: asset.type,
+          assetId: asset.assetId,
+          assetCode: asset.assetCode,
+          assetName: asset.assetName,
+          exists: Boolean(existing),
+          targetAssetId: existing?.id,
+        };
+      }),
+    );
+
+    return {
+      tenant,
+      packageVersion: {
+        id: version.id,
+        packageId: version.packageId,
+        versionNo: version.versionNo,
+        status: version.status,
+      },
+      assets,
+      hasConflict: assets.some((item) => item.exists),
+    };
+  }
+
+  async install(user: CurrentUser, dto: CreatePackageInstallDto) {
+    const conflictPolicy =
+      dto.conflictPolicy ?? PackageInstallConflictPolicy.FAIL;
+
+    await this.ensureTenant(dto.tenantId);
+    const version = await this.loadPublishedVersion(dto.packageVersionId);
+
+    const conflicts = await this.preview(dto);
+    if (
+      conflictPolicy === PackageInstallConflictPolicy.FAIL &&
+      conflicts.hasConflict
+    ) {
+      throw new BadRequestException(
+        '目标租户存在冲突资产，请选择 SKIP 或 OVERWRITE',
+      );
+    }
+
+    const install = await this.prisma.packageInstall.create({
+      data: {
+        tenantId: dto.tenantId,
+        packageVersionId: dto.packageVersionId,
+        conflictPolicy,
+        installedById: user.id,
+      },
+    });
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const ctx: InstallContext = {
+          tenantId: dto.tenantId,
+          userId: user.id,
+          conflictPolicy,
+          assetIdMap: new Map(),
+          formIdMap: new Map(),
+          formCodeMap: new Map(),
+          formVersionIdMap: new Map(),
+          tableIdMap: new Map(),
+          fieldIdMap: new Map(),
+          menuIdMap: new Map(),
+        };
+
+        await this.addLog(
+          tx,
+          install.id,
+          PackageInstallLogLevel.INFO,
+          '开始安装套餐',
+        );
+
+        for (const asset of version.assets) {
+          await this.installAsset(tx, install.id, asset, ctx);
+        }
+
+        const summary = await this.buildSummary(tx, install.id);
+
+        await this.addLog(
+          tx,
+          install.id,
+          PackageInstallLogLevel.INFO,
+          '套餐安装完成',
+          summary,
+        );
+
+        return tx.packageInstall.update({
+          where: { id: install.id },
+          data: {
+            status: PackageInstallStatus.SUCCESS,
+            finishedAt: new Date(),
+            summary: this.toJson(summary),
+          },
+          include: {
+            assets: { orderBy: { createdAt: 'asc' } },
+            logs: { orderBy: { createdAt: 'asc' } },
+          },
+        });
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '套餐安装失败';
+
+      await this.prisma.packageInstall.update({
+        where: { id: install.id },
+        data: {
+          status: PackageInstallStatus.FAILED,
+          finishedAt: new Date(),
+          error: message,
+        },
+      });
+
+      await this.prisma.packageInstallLog.create({
+        data: {
+          installId: install.id,
+          level: PackageInstallLogLevel.ERROR,
+          message,
+        },
+      });
+
+      throw error;
+    }
+  }
+
+  findMany(query: QueryPackageInstallDto) {
+    return this.prisma.packageInstall.findMany({
+      where: {
+        tenantId: query.tenantId,
+        packageVersionId: query.packageVersionId,
+        status: query.status,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        _count: { select: { assets: true, logs: true } },
+      },
+    });
+  }
+
+  async findOne(id: string) {
+    const item = await this.prisma.packageInstall.findUnique({
+      where: { id },
+      include: {
+        assets: { orderBy: { createdAt: 'asc' } },
+        logs: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+
+    if (!item) throw new NotFoundException('套餐安装记录不存在');
+    return item;
+  }
+
+  private async installAsset(
+    tx: Tx,
+    installId: string,
+    asset: PackageAsset,
+    ctx: InstallContext,
+  ) {
+    const existing = await this.findExistingTarget(tx, ctx.tenantId, asset);
+
+    if (existing && ctx.conflictPolicy === PackageInstallConflictPolicy.SKIP) {
+      this.rememberExisting(asset, existing.id, ctx);
+
+      await this.recordAsset(tx, installId, asset, {
+        targetAssetId: existing.id,
+        status: PackageInstallAssetStatus.SKIPPED,
+        action: PackageInstallAssetAction.SKIPPED,
+      });
+
+      return;
+    }
+
+    if (existing && ctx.conflictPolicy === PackageInstallConflictPolicy.FAIL) {
+      throw new BadRequestException(
+        `资产已存在：${asset.type} ${asset.assetCode ?? asset.assetId}`,
+      );
+    }
+
+    let targetId: string;
+
+    switch (asset.type) {
+      case PackageAssetType.PERMISSION:
+        targetId = await this.installPermission(tx, asset, existing);
+        break;
+      case PackageAssetType.MENU:
+        targetId = await this.installMenu(tx, asset, existing, ctx);
+        break;
+      case PackageAssetType.DICTIONARY:
+        targetId = await this.installDictionary(tx, asset, existing, ctx);
+        break;
+      case PackageAssetType.DATA_SOURCE:
+        targetId = await this.installDataSource(tx, asset, existing, ctx);
+        break;
+      case PackageAssetType.FORM:
+        targetId = await this.installForm(tx, asset, existing, ctx);
+        break;
+      case PackageAssetType.FORM_VERSION:
+        targetId = await this.installFormVersion(tx, asset, existing, ctx);
+        break;
+      case PackageAssetType.LIST_VIEW:
+        targetId = await this.installListView(tx, asset, existing, ctx);
+        break;
+      case PackageAssetType.MESSAGE_TEMPLATE:
+        targetId = await this.installMessageTemplate(tx, asset, existing, ctx);
+        break;
+      default:
+        throw new BadRequestException(`暂不支持安装资产类型：${asset.type}`);
+    }
+
+    ctx.assetIdMap.set(asset.assetId, targetId);
+
+    await this.recordAsset(tx, installId, asset, {
+      targetAssetId: targetId,
+      status: PackageInstallAssetStatus.SUCCESS,
+      action: existing
+        ? PackageInstallAssetAction.UPDATED
+        : PackageInstallAssetAction.CREATED,
+    });
+  }
+
+  private async installPermission(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+
+    if (existing) {
+      const updated = await tx.permission.update({
+        where: { id: existing.id },
+        data: {
+          name: s.name,
+          module: s.module,
+          type: s.type,
+          description: s.description,
+        },
+      });
+      return updated.id;
+    }
+
+    const created = await tx.permission.create({
+      data: {
+        code: s.code,
+        name: s.name,
+        module: s.module,
+        type: s.type,
+        description: s.description,
+      },
+    });
+
+    return created.id;
+  }
+
+  private async installMenu(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const parentId = s.parentId ? ctx.menuIdMap.get(s.parentId) : undefined;
+
+    if (existing) {
+      const updated = await tx.menu.update({
+        where: { id: existing.id },
+        data: {
+          parentId,
+          type: s.type,
+          title: s.title,
+          path: s.path,
+          component: s.component,
+          redirect: s.redirect,
+          icon: s.icon,
+          sort: s.sort,
+          permissionCode: s.permissionCode,
+          isVisible: s.isVisible,
+          isEnabled: s.isEnabled,
+          meta: this.toJson(s.meta),
+        },
+      });
+
+      ctx.menuIdMap.set(s.id, updated.id);
+      return updated.id;
+    }
+
+    const created = await tx.menu.create({
+      data: {
+        tenantId: ctx.tenantId,
+        parentId,
+        type: s.type,
+        title: s.title,
+        name: s.name,
+        path: s.path,
+        component: s.component,
+        redirect: s.redirect,
+        icon: s.icon,
+        sort: s.sort,
+        permissionCode: s.permissionCode,
+        isVisible: s.isVisible,
+        isEnabled: s.isEnabled,
+        meta: this.toJson(s.meta),
+      },
+    });
+
+    ctx.menuIdMap.set(s.id, created.id);
+    return created.id;
+  }
+
+  private async installDictionary(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const scopeKey = this.tenantScopeKey(ctx.tenantId);
+
+    const base = {
+      tenantId: ctx.tenantId,
+      scopeKey,
+      code: s.code,
+      name: s.name,
+      description: s.description,
+      sort: s.sort,
+      isActive: s.isActive,
+    };
+
+    const dictionary = existing
+      ? await tx.dictionary.update({
+          where: { id: existing.id },
+          data: base,
+        })
+      : await tx.dictionary.create({ data: base });
+
+    await tx.dictionaryItem.deleteMany({
+      where: { dictionaryId: dictionary.id },
+    });
+    await this.createDictionaryItems(tx, dictionary.id, s.items ?? []);
+
+    return dictionary.id;
+  }
+
+  private async installDataSource(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const scopeKey = this.tenantScopeKey(ctx.tenantId);
+
+    const base = {
+      tenantId: ctx.tenantId,
+      scopeKey,
+      code: s.code,
+      name: s.name,
+      type: s.type,
+      description: s.description,
+      config: this.toJson(s.config ?? {})!,
+      sort: s.sort,
+      isActive: s.isActive,
+    };
+
+    const dataSource = existing
+      ? await tx.dataSource.update({ where: { id: existing.id }, data: base })
+      : await tx.dataSource.create({ data: base });
+
+    await tx.dataSourceField.deleteMany({
+      where: { dataSourceId: dataSource.id },
+    });
+
+    if (s.fields?.length) {
+      await tx.dataSourceField.createMany({
+        data: s.fields.map((field: any) => ({
+          dataSourceId: dataSource.id,
+          key: field.key,
+          label: field.label,
+          path: field.path,
+          type: field.type,
+          isValue: field.isValue,
+          isLabel: field.isLabel,
+          isExtra: field.isExtra,
+          sort: field.sort,
+        })),
+      });
+    }
+
+    return dataSource.id;
+  }
+
+  private async installForm(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const scopeKey = this.tenantScopeKey(ctx.tenantId);
+
+    const base = {
+      tenantId: ctx.tenantId,
+      scopeKey,
+      code: s.code,
+      name: s.name,
+      description: s.description,
+      status: s.status,
+      version: s.version,
+      layout: this.toJson(s.layout),
+      config: this.toJson(s.config),
+      sort: s.sort,
+    };
+
+    const form = existing
+      ? await tx.formDefinition.update({
+          where: { id: existing.id },
+          data: base,
+        })
+      : await tx.formDefinition.create({ data: base });
+
+    if (existing) {
+      await tx.formTable.deleteMany({ where: { formId: form.id } });
+    }
+
+    ctx.formIdMap.set(s.id, form.id);
+    ctx.formCodeMap.set(s.code, form.id);
+
+    await this.createFormTables(tx, form.id, s.tables ?? [], null, ctx);
+
+    return form.id;
+  }
+
+  private async installFormVersion(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const formId =
+      ctx.formCodeMap.get(s.formCode) ??
+      (await this.findTargetFormId(tx, ctx.tenantId, s.formCode));
+    const snapshot = this.rewriteFormSnapshot(s.snapshot, ctx, formId);
+
+    const data = {
+      tenantId: ctx.tenantId,
+      formId,
+      formCode: s.formCode,
+      version: s.version,
+      status: s.status,
+      snapshot: this.toJson(snapshot)!,
+      publishedById: ctx.userId,
+      publishedAt: new Date(),
+    };
+
+    const formVersion = existing
+      ? await tx.formVersion.update({ where: { id: existing.id }, data })
+      : await tx.formVersion.create({ data });
+
+    ctx.formVersionIdMap.set(s.id, formVersion.id);
+    return formVersion.id;
+  }
+
+  private async installListView(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const formId =
+      ctx.formIdMap.get(s.formId) ??
+      (s.formId ? ctx.assetIdMap.get(s.formId) : undefined) ??
+      (await this.findTargetFormIdBySource(tx, ctx.tenantId, s.formId));
+
+    const formVersionId = s.formVersionId
+      ? ctx.formVersionIdMap.get(s.formVersionId)
+      : undefined;
+
+    const base = {
+      tenantId: ctx.tenantId,
+      formId,
+      formVersionId,
+      code: s.code,
+      name: s.name,
+      status: s.status,
+      isDefault: s.isDefault,
+      config: this.toJson(s.config),
+      sort: s.sort,
+    };
+
+    const listView = existing
+      ? await tx.listView.update({ where: { id: existing.id }, data: base })
+      : await tx.listView.create({ data: base });
+
+    await tx.listViewColumn.deleteMany({ where: { viewId: listView.id } });
+    await tx.listViewFilter.deleteMany({ where: { viewId: listView.id } });
+
+    if (s.columns?.length) {
+      await tx.listViewColumn.createMany({
+        data: s.columns.map((column: any) => ({
+          viewId: listView.id,
+          source: column.source,
+          systemKey: column.systemKey,
+          fieldId: column.fieldId
+            ? (ctx.fieldIdMap.get(column.fieldId) ?? column.fieldId)
+            : null,
+          fieldCode: column.fieldCode,
+          title: column.title,
+          width: column.width,
+          fixed: column.fixed,
+          hidden: column.hidden,
+          sortable: column.sortable,
+          sortDirection: column.sortDirection,
+          config: this.toJson(column.config),
+          sort: column.sort,
+        })),
+      });
+    }
+
+    if (s.filters?.length) {
+      await tx.listViewFilter.createMany({
+        data: s.filters.map((filter: any) => ({
+          viewId: listView.id,
+          source: filter.source,
+          systemKey: filter.systemKey,
+          fieldId: filter.fieldId
+            ? (ctx.fieldIdMap.get(filter.fieldId) ?? filter.fieldId)
+            : null,
+          fieldCode: filter.fieldCode,
+          label: filter.label,
+          operator: filter.operator,
+          defaultValue: this.toJson(filter.defaultValue),
+          required: filter.required,
+          config: this.toJson(filter.config),
+          sort: filter.sort,
+        })),
+      });
+    }
+
+    return listView.id;
+  }
+
+  private async installMessageTemplate(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+    const scopeKey = this.tenantScopeKey(ctx.tenantId);
+
+    const base = {
+      tenantId: ctx.tenantId,
+      scopeKey,
+      code: s.code,
+      name: s.name,
+      type: s.type,
+      level: s.level,
+      titleTemplate: s.titleTemplate,
+      contentTemplate: s.contentTemplate,
+      config: this.toJson(s.config),
+      isActive: s.isActive,
+    };
+
+    const item = existing
+      ? await tx.messageTemplate.update({
+          where: { id: existing.id },
+          data: base,
+        })
+      : await tx.messageTemplate.create({ data: base });
+
+    return item.id;
+  }
+
+  private async findExistingTarget(
+    client: Tx | PrismaService,
+    tenantId: string,
+    asset: PackageAsset,
+  ): Promise<ExistingTarget> {
+    const code = asset.assetCode;
+    const scopeKey = this.tenantScopeKey(tenantId);
+
+    switch (asset.type) {
+      case PackageAssetType.PERMISSION:
+        return code
+          ? client.permission.findUnique({
+              where: { code },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.MENU:
+        return code
+          ? client.menu.findFirst({
+              where: { tenantId, name: code },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.DICTIONARY:
+        return code
+          ? client.dictionary.findUnique({
+              where: { scopeKey_code: { scopeKey, code } },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.DATA_SOURCE:
+        return code
+          ? client.dataSource.findUnique({
+              where: { scopeKey_code: { scopeKey, code } },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.FORM:
+        return code
+          ? client.formDefinition.findUnique({
+              where: { scopeKey_code: { scopeKey, code } },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.FORM_VERSION: {
+        const s = this.snapshotOrThrow<any>(asset);
+        return client.formVersion.findUnique({
+          where: {
+            tenantId_formCode_version: {
+              tenantId,
+              formCode: s.formCode,
+              version: s.version,
+            },
+          },
+          select: { id: true },
+        });
+      }
+      case PackageAssetType.LIST_VIEW:
+        return code
+          ? client.listView.findUnique({
+              where: { tenantId_code: { tenantId, code } },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.MESSAGE_TEMPLATE:
+        return code
+          ? client.messageTemplate.findUnique({
+              where: { scopeKey_code: { scopeKey, code } },
+              select: { id: true },
+            })
+          : null;
+      default:
+        return null;
+    }
+  }
+
+  private async createDictionaryItems(
+    tx: Tx,
+    dictionaryId: string,
+    items: any[],
+    oldParentId: string | null = null,
+    newParentId: string | null = null,
+  ) {
+    const children = items
+      .filter((item) => (item.parentId ?? null) === oldParentId)
+      .sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+
+    for (const item of children) {
+      const created = await tx.dictionaryItem.create({
+        data: {
+          dictionaryId,
+          parentId: newParentId,
+          value: item.value,
+          label: item.label,
+          color: item.color,
+          sort: item.sort,
+          isActive: item.isActive,
+          extra: this.toJson(item.extra),
+        },
+      });
+
+      await this.createDictionaryItems(
+        tx,
+        dictionaryId,
+        items,
+        item.id,
+        created.id,
+      );
+    }
+  }
+
+  private async createFormTables(
+    tx: Tx,
+    formId: string,
+    tables: any[],
+    oldParentId: string | null,
+    ctx: InstallContext,
+  ) {
+    const children = tables
+      .filter((table) => (table.parentId ?? null) === oldParentId)
+      .sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0));
+
+    for (const table of children) {
+      const parentId = table.parentId
+        ? ctx.tableIdMap.get(table.parentId)
+        : undefined;
+
+      const createdTable = await tx.formTable.create({
+        data: {
+          formId,
+          parentId,
+          code: table.code,
+          name: table.name,
+          type: table.type,
+          layout: this.toJson(table.layout),
+          config: this.toJson(table.config),
+          sort: table.sort,
+        },
+      });
+
+      ctx.tableIdMap.set(table.id, createdTable.id);
+
+      for (const field of table.fields ?? []) {
+        const createdField = await tx.formField.create({
+          data: {
+            tableId: createdTable.id,
+            code: field.code,
+            name: field.name,
+            type: field.type,
+            required: field.required,
+            unique: field.unique,
+            readonly: field.readonly,
+            hidden: field.hidden,
+            defaultValue: this.toJson(field.defaultValue),
+            dictionaryCode: field.dictionaryCode,
+            dataSourceCode: field.dataSourceCode,
+            dataSourceMapping: this.toJson(field.dataSourceMapping),
+            formula: this.toJson(field.formula),
+            validationRules: this.toJson(field.validationRules),
+            visibleWhen: this.toJson(field.visibleWhen),
+            config: this.toJson(field.config),
+            sort: field.sort,
+          },
+        });
+
+        ctx.fieldIdMap.set(field.id, createdField.id);
+      }
+
+      await this.createFormTables(tx, formId, tables, table.id, ctx);
+    }
+  }
+
+  private rewriteFormSnapshot(
+    snapshot: any,
+    ctx: InstallContext,
+    formId: string,
+  ) {
+    const cloned = JSON.parse(JSON.stringify(snapshot ?? {}));
+
+    if (cloned.form) {
+      cloned.form.id = formId;
+      cloned.form.tenantId = ctx.tenantId;
+    }
+
+    if (Array.isArray(cloned.tables)) {
+      cloned.tables = cloned.tables.map((table: any) => ({
+        ...table,
+        id: ctx.tableIdMap.get(table.id) ?? table.id,
+        parentId: table.parentId
+          ? (ctx.tableIdMap.get(table.parentId) ?? table.parentId)
+          : null,
+        fields: (table.fields ?? []).map((field: any) => ({
+          ...field,
+          id: ctx.fieldIdMap.get(field.id) ?? field.id,
+        })),
+      }));
+    }
+
+    return cloned;
+  }
+
+  private rememberExisting(
+    asset: PackageAsset,
+    targetId: string,
+    ctx: InstallContext,
+  ) {
+    ctx.assetIdMap.set(asset.assetId, targetId);
+
+    if (asset.type === PackageAssetType.FORM) {
+      ctx.formIdMap.set(asset.assetId, targetId);
+      if (asset.assetCode) ctx.formCodeMap.set(asset.assetCode, targetId);
+    }
+
+    if (asset.type === PackageAssetType.FORM_VERSION) {
+      ctx.formVersionIdMap.set(asset.assetId, targetId);
+    }
+
+    if (asset.type === PackageAssetType.MENU) {
+      ctx.menuIdMap.set(asset.assetId, targetId);
+    }
+  }
+
+  private async recordAsset(
+    tx: Tx,
+    installId: string,
+    asset: PackageAsset,
+    data: {
+      targetAssetId?: string;
+      status: PackageInstallAssetStatus;
+      action: PackageInstallAssetAction;
+      error?: string;
+    },
+  ) {
+    return tx.packageInstallAsset.create({
+      data: {
+        installId,
+        packageAssetId: asset.id,
+        type: asset.type,
+        sourceAssetId: asset.assetId,
+        targetAssetId: data.targetAssetId,
+        assetCode: asset.assetCode,
+        status: data.status,
+        action: data.action,
+        error: data.error,
+      },
+    });
+  }
+
+  private async addLog(
+    tx: Tx,
+    installId: string,
+    level: PackageInstallLogLevel,
+    message: string,
+    detail?: unknown,
+  ) {
+    return tx.packageInstallLog.create({
+      data: {
+        installId,
+        level,
+        message,
+        detail: this.toJson(detail),
+      },
+    });
+  }
+
+  private async buildSummary(tx: Tx, installId: string) {
+    const rows = await tx.packageInstallAsset.groupBy({
+      by: ['status'],
+      where: { installId },
+      _count: { status: true },
+    });
+
+    return rows.reduce<Record<string, number>>((acc, row) => {
+      acc[row.status] = row._count.status;
+      return acc;
+    }, {});
+  }
+
+  private async ensureTenant(tenantId: string) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+    if (!tenant) throw new NotFoundException('租户不存在');
+    return tenant;
+  }
+
+  private async loadPublishedVersion(packageVersionId: string) {
+    const version = await this.prisma.packageVersion.findUnique({
+      where: { id: packageVersionId },
+      include: {
+        package: true,
+        assets: { orderBy: [{ sort: 'asc' }, { createdAt: 'asc' }] },
+      },
+    });
+
+    if (!version) throw new NotFoundException('套餐版本不存在');
+
+    if (version.status !== PackageVersionStatus.PUBLISHED) {
+      throw new BadRequestException('只能安装已发布的套餐版本');
+    }
+
+    if (version.assets.length === 0) {
+      throw new BadRequestException('套餐版本没有资产');
+    }
+
+    return version;
+  }
+
+  private async findTargetFormId(tx: Tx, tenantId: string, formCode: string) {
+    const form = await tx.formDefinition.findUnique({
+      where: {
+        scopeKey_code: {
+          scopeKey: this.tenantScopeKey(tenantId),
+          code: formCode,
+        },
+      },
+      select: { id: true },
+    });
+
+    if (!form) throw new BadRequestException(`目标租户表单不存在：${formCode}`);
+    return form.id;
+  }
+
+  private async findTargetFormIdBySource(
+    tx: Tx,
+    tenantId: string,
+    sourceFormId: string,
+  ) {
+    const source = await this.prisma.formDefinition.findUnique({
+      where: { id: sourceFormId },
+      select: { code: true },
+    });
+
+    if (!source) throw new BadRequestException('来源表单不存在');
+
+    return this.findTargetFormId(tx, tenantId, source.code);
+  }
+
+  private snapshotOrThrow<T>(asset: PackageAsset): T {
+    if (!asset.assetSnapshot) {
+      throw new BadRequestException(
+        `套餐资产缺少快照：${asset.type} ${asset.assetCode ?? asset.assetId}`,
+      );
+    }
+
+    return asset.assetSnapshot;
+  }
+
+  private tenantScopeKey(tenantId: string) {
+    return `tenant:${tenantId}`;
+  }
+
+  private toJson(value: unknown): Prisma.InputJsonValue | undefined {
+    if (value === undefined) return undefined;
+    return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+  }
+}
