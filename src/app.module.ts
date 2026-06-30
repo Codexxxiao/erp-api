@@ -23,6 +23,7 @@ import { ExportModule } from './export/export.module';
 import { PackageModule } from './package/package.module';
 import { PackageInstallModule } from './package-install/package-install.module';
 import { PackageUpgradeModule } from './package-upgrade/package-upgrade.module';
+import { FileModule } from './file/file.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { PackageUpgradeModule } from './package-upgrade/package-upgrade.module';
     PackageModule,
     PackageInstallModule,
     PackageUpgradeModule,
+    FileModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
