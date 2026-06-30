@@ -1,4 +1,3 @@
-export class CreateListViewDto {}
 import { Type } from 'class-transformer';
 import {
   IsArray,

@@ -5,7 +5,6 @@ import {
 } from '@nestjs/common';
 import {
   FormTableType,
-  FormVersion,
   ListViewColumn,
   ListViewColumnSource,
   ListViewFilter,
@@ -394,11 +393,11 @@ export class ListViewService {
       case ListViewFilterOperator.NE:
         return `${expr} <> ${push(filter.value)}`;
       case ListViewFilterOperator.CONTAINS:
-        return `${expr}::text ILIKE ${push(`%${filter.value ?? ''}%`)}`;
+        return `${expr}::text ILIKE ${push(`%${this.toFilterText(filter.value)}%`)}`;
       case ListViewFilterOperator.STARTS_WITH:
-        return `${expr}::text ILIKE ${push(`${filter.value ?? ''}%`)}`;
+        return `${expr}::text ILIKE ${push(`${this.toFilterText(filter.value)}%`)}`;
       case ListViewFilterOperator.ENDS_WITH:
-        return `${expr}::text ILIKE ${push(`%${filter.value ?? ''}`)}`;
+        return `${expr}::text ILIKE ${push(`%${this.toFilterText(filter.value)}`)}`;
       case ListViewFilterOperator.GT:
         return `${expr} > ${push(filter.value)}`;
       case ListViewFilterOperator.GTE:
@@ -599,6 +598,15 @@ export class ListViewService {
 
   private fieldAlias(fieldId: string) {
     return `f_${fieldId.replace(/-/g, '_')}`;
+  }
+
+  private toFilterText(value: unknown): string {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    throw new BadRequestException('筛选值必须是字符串或数字');
   }
 
   private mapRow(
