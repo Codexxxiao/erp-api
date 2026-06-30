@@ -13,6 +13,7 @@ import {
   PackageInstallStatus,
   PackageVersionStatus,
   Prisma,
+  WorkflowDefinitionStatus,
 } from '../generated/prisma/client';
 import type { CurrentUser } from '../common/types/current-user';
 import { PrismaService } from '../prisma/prisma.service';
@@ -73,6 +74,245 @@ export class PackageInstallService {
       assets,
       hasConflict: assets.some((item) => item.exists),
     };
+  }
+
+  private async resolveTargetFormId(
+    tx: Tx,
+    ctx: InstallContext,
+    sourceFormId: string,
+  ) {
+    return (
+      ctx.formIdMap.get(sourceFormId) ??
+      ctx.assetIdMap.get(sourceFormId) ??
+      (await this.findTargetFormIdBySource(tx, ctx.tenantId, sourceFormId))
+    );
+  }
+
+  private async resolveTargetFormVersionId(
+    tx: Tx,
+    ctx: InstallContext,
+    sourceFormVersionId: string,
+  ) {
+    const mapped = ctx.formVersionIdMap.get(sourceFormVersionId);
+    if (mapped) return mapped;
+
+    const source = await this.prisma.formVersion.findUnique({
+      where: { id: sourceFormVersionId },
+      select: { formCode: true, version: true },
+    });
+
+    if (!source) {
+      throw new BadRequestException('来源表单版本不存在');
+    }
+
+    const target = await tx.formVersion.findUnique({
+      where: {
+        tenantId_formCode_version: {
+          tenantId: ctx.tenantId,
+          formCode: source.formCode,
+          version: source.version,
+        },
+      },
+      select: { id: true },
+    });
+
+    if (!target) {
+      throw new BadRequestException(
+        `目标租户表单版本不存在：${source.formCode}@${source.version}`,
+      );
+    }
+
+    return target.id;
+  }
+
+  private workflowNeedsApproverRebind(nodes: any[]) {
+    return nodes.some(
+      (node) => Boolean(node.approverUserId) || Boolean(node.approverRoleId),
+    );
+  }
+
+  private rewriteWorkflowNodeConfig(node: any) {
+    const config =
+      node.config && typeof node.config === 'object' ? { ...node.config } : {};
+
+    if (node.approverUserId) {
+      config.sourceApproverUserId = node.approverUserId;
+      config.needRebindApprover = true;
+    }
+
+    if (node.approverRoleId) {
+      config.sourceApproverRoleId = node.approverRoleId;
+      config.needRebindApprover = true;
+    }
+
+    return config;
+  }
+  private async installDocumentFlow(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+
+    const sourceFormId = await this.resolveTargetFormId(
+      tx,
+      ctx,
+      s.sourceFormId,
+    );
+    const targetFormId = await this.resolveTargetFormId(
+      tx,
+      ctx,
+      s.targetFormId,
+    );
+
+    const base = {
+      tenantId: ctx.tenantId,
+      code: s.code,
+      name: s.name,
+      direction: s.direction,
+      sourceFormId,
+      targetFormId,
+      status: s.status,
+      repeatPolicy: s.repeatPolicy,
+      description: s.description,
+      config: this.toJson(s.config),
+    };
+
+    const flow = existing
+      ? await tx.documentFlow.update({
+          where: { id: existing.id },
+          data: base,
+        })
+      : await tx.documentFlow.create({ data: base });
+
+    if (existing) {
+      await tx.documentFlowMapping.deleteMany({
+        where: { flowId: flow.id },
+      });
+    }
+
+    if (s.mappings?.length) {
+      await tx.documentFlowMapping.createMany({
+        data: s.mappings.map((mapping: any) => ({
+          flowId: flow.id,
+          sourceTableCode: mapping.sourceTableCode,
+          sourceFieldCode: mapping.sourceFieldCode,
+          targetTableCode: mapping.targetTableCode,
+          targetFieldCode: mapping.targetFieldCode,
+          mappingType: mapping.mappingType,
+          constantValue: this.toJson(mapping.constantValue),
+          sort: mapping.sort,
+        })),
+      });
+    }
+
+    return flow.id;
+  }
+
+  private async installWorkflow(
+    tx: Tx,
+    asset: PackageAsset,
+    existing: ExistingTarget,
+    ctx: InstallContext,
+  ) {
+    const s = this.snapshotOrThrow<any>(asset);
+
+    const formId = await this.resolveTargetFormId(tx, ctx, s.formId);
+    const formVersionId = s.formVersionId
+      ? await this.resolveTargetFormVersionId(tx, ctx, s.formVersionId)
+      : null;
+
+    if (existing) {
+      const instanceCount = await tx.workflowInstance.count({
+        where: { definitionId: existing.id },
+      });
+
+      if (instanceCount > 0) {
+        throw new BadRequestException(
+          `工作流已有流程实例，不能覆盖：${s.code}`,
+        );
+      }
+    }
+
+    const needRebindApprover = this.workflowNeedsApproverRebind(s.nodes ?? []);
+
+    const base = {
+      tenantId: ctx.tenantId,
+      code: s.code,
+      name: s.name,
+      formId,
+      formVersionId,
+      status: needRebindApprover ? WorkflowDefinitionStatus.DRAFT : s.status,
+      description: s.description,
+      config: this.toJson(s.config),
+    };
+
+    const definition = existing
+      ? await tx.workflowDefinition.update({
+          where: { id: existing.id },
+          data: base,
+        })
+      : await tx.workflowDefinition.create({ data: base });
+
+    if (existing) {
+      await tx.workflowTransition.deleteMany({
+        where: { definitionId: definition.id },
+      });
+      await tx.workflowNode.deleteMany({
+        where: { definitionId: definition.id },
+      });
+    }
+
+    const nodeIdMap = new Map<string, string>();
+
+    for (const node of s.nodes ?? []) {
+      const created = await tx.workflowNode.create({
+        data: {
+          definitionId: definition.id,
+          code: node.code,
+          name: node.name,
+          type: node.type,
+          approverType: node.approverType,
+          approverUserId: null,
+          approverRoleId: null,
+          approveMode: node.approveMode,
+          sort: node.sort,
+          config: this.toJson(this.rewriteWorkflowNodeConfig(node)),
+        },
+      });
+
+      nodeIdMap.set(node.id, created.id);
+      nodeIdMap.set(node.code, created.id);
+    }
+
+    for (const transition of s.transitions ?? []) {
+      const sourceNodeId =
+        nodeIdMap.get(transition.sourceNodeId) ??
+        nodeIdMap.get(transition.sourceNodeCode);
+
+      const targetNodeId =
+        nodeIdMap.get(transition.targetNodeId) ??
+        nodeIdMap.get(transition.targetNodeCode);
+
+      if (!sourceNodeId || !targetNodeId) {
+        throw new BadRequestException(
+          `工作流连线节点不存在：${s.code}（${transition.sourceNodeCode ?? transition.sourceNodeId} → ${transition.targetNodeCode ?? transition.targetNodeId}）`,
+        );
+      }
+
+      await tx.workflowTransition.create({
+        data: {
+          definitionId: definition.id,
+          sourceNodeId,
+          targetNodeId,
+          condition: this.toJson(transition.condition),
+          sort: transition.sort,
+        },
+      });
+    }
+
+    return definition.id;
   }
 
   async install(user: CurrentUser, dto: CreatePackageInstallDto) {
@@ -254,8 +494,15 @@ export class PackageInstallService {
       case PackageAssetType.MESSAGE_TEMPLATE:
         targetId = await this.installMessageTemplate(tx, asset, existing, ctx);
         break;
+      case PackageAssetType.DOCUMENT_FLOW:
+        targetId = await this.installDocumentFlow(tx, asset, existing, ctx);
+        break;
+
+      case PackageAssetType.WORKFLOW:
+        targetId = await this.installWorkflow(tx, asset, existing, ctx);
+        break;
       default:
-        throw new BadRequestException(`暂不支持安装资产类型：${asset.type}`);
+        throw new BadRequestException('暂不支持安装资产类型');
     }
 
     ctx.assetIdMap.set(asset.assetId, targetId);
@@ -518,13 +765,9 @@ export class PackageInstallService {
     ctx: InstallContext,
   ) {
     const s = this.snapshotOrThrow<any>(asset);
-    const formId =
-      ctx.formIdMap.get(s.formId) ??
-      (s.formId ? ctx.assetIdMap.get(s.formId) : undefined) ??
-      (await this.findTargetFormIdBySource(tx, ctx.tenantId, s.formId));
-
+    const formId = await this.resolveTargetFormId(tx, ctx, s.formId);
     const formVersionId = s.formVersionId
-      ? ctx.formVersionIdMap.get(s.formVersionId)
+      ? await this.resolveTargetFormVersionId(tx, ctx, s.formVersionId)
       : undefined;
 
     const base = {
@@ -553,7 +796,11 @@ export class PackageInstallService {
           source: column.source,
           systemKey: column.systemKey,
           fieldId: column.fieldId
-            ? (ctx.fieldIdMap.get(column.fieldId) ?? column.fieldId)
+            ? this.resolveMappedFieldId(
+                ctx,
+                column.fieldId,
+                `列表列 ${column.fieldCode ?? column.title ?? ''}`,
+              )
             : null,
           fieldCode: column.fieldCode,
           title: column.title,
@@ -575,7 +822,11 @@ export class PackageInstallService {
           source: filter.source,
           systemKey: filter.systemKey,
           fieldId: filter.fieldId
-            ? (ctx.fieldIdMap.get(filter.fieldId) ?? filter.fieldId)
+            ? this.resolveMappedFieldId(
+                ctx,
+                filter.fieldId,
+                `列表筛选 ${filter.fieldCode ?? filter.label ?? ''}`,
+              )
             : null,
           fieldCode: filter.fieldCode,
           label: filter.label,
@@ -691,6 +942,21 @@ export class PackageInstallService {
         return code
           ? client.messageTemplate.findUnique({
               where: { scopeKey_code: { scopeKey, code } },
+              select: { id: true },
+            })
+          : null;
+      case PackageAssetType.DOCUMENT_FLOW:
+        return code
+          ? client.documentFlow.findUnique({
+              where: { tenantId_code: { tenantId, code } },
+              select: { id: true },
+            })
+          : null;
+
+      case PackageAssetType.WORKFLOW:
+        return code
+          ? client.workflowDefinition.findUnique({
+              where: { tenantId_code: { tenantId, code } },
               select: { id: true },
             })
           : null;
@@ -968,7 +1234,21 @@ export class PackageInstallService {
       );
     }
 
-    return asset.assetSnapshot;
+    return asset.assetSnapshot as T;
+  }
+
+  private resolveMappedFieldId(
+    ctx: InstallContext,
+    sourceFieldId: string,
+    context: string,
+  ): string {
+    const mapped = ctx.fieldIdMap.get(sourceFieldId);
+    if (!mapped) {
+      throw new BadRequestException(
+        `字段映射失败（${context}）：${sourceFieldId}`,
+      );
+    }
+    return mapped;
   }
 
   private tenantScopeKey(tenantId: string) {
