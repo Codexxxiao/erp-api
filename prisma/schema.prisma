@@ -32,6 +32,9 @@ model Tenant {
   formRecords  FormRecord[]
   formVersions FormVersion[]
   workflowDefinitions WorkflowDefinition[]
+  messages         Message[]
+  messageTemplates MessageTemplate[]
+  messageRecipients MessageRecipient[]
 }
 
 model User {
@@ -51,6 +54,7 @@ model User {
   refreshTokens      RefreshToken[]
   invitesSent        UserInvite[]   @relation("InviteCreator")
   invitesAccepted    UserInvite[]   @relation("InviteAcceptor")
+  messageRecipients MessageRecipient[] @relation("MessageRecipientUser")
 
   userRoles UserRole[]
 
@@ -858,4 +862,96 @@ model WorkflowActionLog {
   @@index([instanceId])
   @@index([taskId])
   @@index([userId])
+}
+
+
+enum MessageType {
+  SYSTEM
+  WORKFLOW
+  DOCUMENT_FLOW
+  PACKAGE
+  NOTICE
+}
+
+enum MessageLevel {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+enum MessageRecipientStatus {
+  UNREAD
+  READ
+  ARCHIVED
+}
+
+model Message {
+  id          String       @id @default(uuid())
+  tenantId    String
+  title       String
+  content     String
+  type        MessageType  @default(SYSTEM)
+  level       MessageLevel @default(INFO)
+  sourceType  String?
+  sourceId    String?
+  linkType    String?
+  linkId      String?
+  linkUrl     String?
+  payload     Json?
+  createdById String?
+  expiresAt   DateTime?
+  createdAt   DateTime     @default(now())
+
+  tenant     Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  recipients MessageRecipient[]
+
+  @@index([tenantId])
+  @@index([type])
+  @@index([sourceType, sourceId])
+  @@index([createdAt])
+}
+
+model MessageRecipient {
+  id         String                 @id @default(uuid())
+  tenantId   String
+  messageId  String
+  userId     String
+  status     MessageRecipientStatus @default(UNREAD)
+  readAt     DateTime?
+  archivedAt DateTime?
+  createdAt  DateTime               @default(now())
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation("MessageRecipientUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([tenantId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model MessageTemplate {
+  id              String       @id @default(uuid())
+  tenantId        String?
+  scopeKey        String
+  code            String
+  name            String
+  type            MessageType  @default(SYSTEM)
+  level           MessageLevel @default(INFO)
+  titleTemplate   String
+  contentTemplate String
+  config          Json?
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([scopeKey, code])
+  @@index([tenantId])
+  @@index([scopeKey])
+  @@index([code])
 }

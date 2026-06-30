@@ -26,14 +26,17 @@ import {
 import { UpdateWorkflowDefinitionDto } from './dto/update-workflow-definition.dto';
 import { StartWorkflowDto } from './dto/start-workflow.dto';
 import { WorkflowTaskActionDto } from './dto/workflow-task-action.dto';
-
+import { MessageService } from '../message/message.service';
 type WorkflowGraph = Prisma.WorkflowDefinitionGetPayload<{
   include: { nodes: true; transitions: true };
 }>;
 
 @Injectable()
 export class WorkflowService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly messageService: MessageService,
+  ) {}
 
   async createDefinition(user: CurrentUser, dto: CreateWorkflowDefinitionDto) {
     const tenantId = requireTenantId(user);
@@ -652,6 +655,23 @@ export class WorkflowService {
         assigneeUserId,
       })),
     });
+
+    await this.messageService.sendSystem(
+      {
+        tenantId: params.tenantId,
+        userIds: assigneeIds,
+        title: '新的审批待办',
+        content: '你有一条新的审批任务需要处理',
+        type: MessageType.WORKFLOW,
+        level: MessageLevel.INFO,
+        sourceType: 'workflow_instance',
+        sourceId: params.instanceId,
+        linkType: 'workflow_task',
+        linkId: targetNode.id,
+        createdById: params.userId,
+      },
+      tx,
+    );
   }
 
   private async finishApproved(

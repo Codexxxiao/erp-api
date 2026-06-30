@@ -17,6 +17,7 @@ import { FormSchemaProvisionModule } from './form-schema-provision/form-schema-p
 import { DocumentFlowModule } from './document-flow/document-flow.module';
 import { FormSnapshotModule } from './form-snapshot/form-snapshot.module';
 import { WorkflowModule } from './workflow/workflow.module';
+import { MessageModule } from './message/message.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { WorkflowModule } from './workflow/workflow.module';
     DocumentFlowModule,
     FormSnapshotModule,
     WorkflowModule,
+    MessageModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
