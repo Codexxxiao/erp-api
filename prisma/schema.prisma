@@ -1063,3 +1063,97 @@ model ListViewFilter {
   @@index([fieldCode])
   @@index([systemKey])
 }
+
+enum PackageStatus {
+  DRAFT
+  ACTIVE
+  DISABLED
+}
+
+enum PackageVersionStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum PackageAssetType {
+  PERMISSION
+  MENU
+  DICTIONARY
+  DATA_SOURCE
+  FORM
+  FORM_VERSION
+  LIST_VIEW
+  DOCUMENT_FLOW
+  WORKFLOW
+  MESSAGE_TEMPLATE
+}
+
+model Package {
+  id          String        @id @default(uuid())
+  code        String        @unique
+  name        String
+  description String?
+  category    String?
+  tags        Json?
+  status      PackageStatus @default(DRAFT)
+  config      Json?
+  createdById String?
+  updatedById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  versions PackageVersion[]
+
+  @@index([status])
+  @@index([category])
+  @@index([createdAt])
+}
+
+model PackageVersion {
+  id            String               @id @default(uuid())
+  packageId     String
+  versionNo     Int
+  name          String?
+  description   String?
+  changelog     String?
+  status        PackageVersionStatus @default(DRAFT)
+  config        Json?
+  publishedById String?
+  publishedAt   DateTime?
+  createdById   String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+
+  package Package        @relation(fields: [packageId], references: [id], onDelete: Cascade)
+  assets  PackageAsset[]
+
+  @@unique([packageId, versionNo])
+  @@index([packageId])
+  @@index([status])
+  @@index([publishedAt])
+}
+
+model PackageAsset {
+  id               String           @id @default(uuid())
+  packageVersionId String
+  type             PackageAssetType
+  assetId          String
+  sourceTenantId   String?
+  assetCode        String?
+  assetName        String?
+  assetSnapshot    Json?
+  dependencies     Json?
+  config           Json?
+  sort             Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  packageVersion PackageVersion @relation(fields: [packageVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([packageVersionId, type, assetId])
+  @@index([packageVersionId])
+  @@index([type])
+  @@index([assetId])
+  @@index([sourceTenantId])
+}

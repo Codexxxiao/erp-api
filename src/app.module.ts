@@ -20,6 +20,7 @@ import { WorkflowModule } from './workflow/workflow.module';
 import { MessageModule } from './message/message.module';
 import { ListViewModule } from './list-view/list-view.module';
 import { ExportModule } from './export/export.module';
+import { PackageModule } from './package/package.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { ExportModule } from './export/export.module';
     MessageModule,
     ListViewModule,
     ExportModule,
+    PackageModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
