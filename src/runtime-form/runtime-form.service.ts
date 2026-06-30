@@ -470,6 +470,21 @@ export class RuntimeFormService {
     };
   }
 
+  private getRuntimeColumns(
+    physicalTable: PhysicalTable,
+    runtimeTable: RuntimeTable,
+  ) {
+    const columnMap = new Map(
+      physicalTable.columns.map((column) => [column.fieldId, column]),
+    );
+
+    return runtimeTable.fields
+      .map((field) => columnMap.get(field.id))
+      .filter((column): column is PhysicalTable['columns'][number] =>
+        Boolean(column),
+      );
+  }
+
   private async getPhysicalTablesOrThrow(
     tenantId: string,
     formId: string,
@@ -488,7 +503,6 @@ export class RuntimeFormService {
       },
       include: {
         columns: {
-          where: { isActive: true },
           orderBy: { createdAt: 'asc' },
         },
       },
@@ -500,7 +514,6 @@ export class RuntimeFormService {
         where: baseWhere,
         include: {
           columns: {
-            where: { isActive: true },
             orderBy: { createdAt: 'asc' },
           },
         },
@@ -645,6 +658,7 @@ export class RuntimeFormService {
 
     await this.insertPhysicalRow(tx, {
       physicalTable,
+      runtimeTable: mainTable,
       tenantId: params.tenantId,
       recordId: params.recordId,
       formId: params.form.id,
@@ -692,6 +706,7 @@ export class RuntimeFormService {
       for (const [index, row] of detail.rows.entries()) {
         await this.insertPhysicalRow(tx, {
           physicalTable,
+          runtimeTable: detail.table,
           tenantId: params.tenantId,
           recordId: params.recordId,
           formId: params.form.id,
@@ -724,6 +739,7 @@ export class RuntimeFormService {
     tx: Prisma.TransactionClient,
     params: {
       physicalTable: PhysicalTable;
+      runtimeTable: RuntimeTable;
       tenantId: string;
       recordId: string;
       formId: string;
@@ -760,7 +776,10 @@ export class RuntimeFormService {
     pushValue('created_by_id', params.userId);
     pushValue('updated_by_id', params.userId);
 
-    for (const column of params.physicalTable.columns) {
+    for (const column of this.getRuntimeColumns(
+      params.physicalTable,
+      params.runtimeTable,
+    )) {
       const rawValue = params.rowData[column.fieldCode];
 
       if (rawValue && typeof rawValue === 'object' && 'value' in rawValue) {
@@ -836,9 +855,15 @@ export class RuntimeFormService {
       recordId,
     );
 
-    const mainData = this.toBusinessRows(mainPhysicalTable, mainRows)[0] ?? {};
+    const mainData =
+      this.toBusinessRows(mainPhysicalTable, mainTable, mainRows)[0] ?? {};
 
-    const details = [];
+    const details: Array<{
+      tableId: string;
+      tableCode: string;
+      tableName: string;
+      rows: Record<string, unknown>[];
+    }> = [];
 
     for (const table of form.tables.filter(
       (item) => item.type === FormTableType.SUB,
@@ -854,7 +879,7 @@ export class RuntimeFormService {
         tableId: table.id,
         tableCode: table.code,
         tableName: table.name,
-        rows: this.toBusinessRows(physicalTable, rows),
+        rows: this.toBusinessRows(physicalTable, table, rows),
       });
     }
 
@@ -883,20 +908,29 @@ export class RuntimeFormService {
 
   private toBusinessRows(
     physicalTable: PhysicalTable,
+    runtimeTable: RuntimeTable,
     rows: Record<string, unknown>[],
   ) {
+    const fieldMap = new Map(
+      runtimeTable.fields.map((field) => [field.id, field]),
+    );
+    const columns = this.getRuntimeColumns(physicalTable, runtimeTable);
+
     return rows.map((row) => {
       const result: Record<string, unknown> = {};
 
-      for (const column of physicalTable.columns) {
+      for (const column of columns) {
+        const field = fieldMap.get(column.fieldId);
+        if (!field) continue;
+
         if (column.labelColumnName || column.extraColumnName) {
-          result[column.fieldCode] = {
+          result[field.code] = {
             value: row[column.columnName],
             label: column.labelColumnName ? row[column.labelColumnName] : null,
             extra: column.extraColumnName ? row[column.extraColumnName] : null,
           };
         } else {
-          result[column.fieldCode] = row[column.columnName];
+          result[field.code] = row[column.columnName];
         }
       }
 
@@ -922,18 +956,16 @@ export class RuntimeFormService {
     label: string,
   ) {
     if (
-      [FormFieldType.TEXT, FormFieldType.TEXTAREA].includes(type) &&
+      (type === FormFieldType.TEXT || type === FormFieldType.TEXTAREA) &&
       typeof value !== 'string'
     ) {
       throw new BadRequestException(`${label} 必须是字符串`);
     }
 
     if (
-      [
-        FormFieldType.NUMBER,
-        FormFieldType.DECIMAL,
-        FormFieldType.MONEY,
-      ].includes(type) &&
+      (type === FormFieldType.NUMBER ||
+        type === FormFieldType.DECIMAL ||
+        type === FormFieldType.MONEY) &&
       typeof value !== 'number'
     ) {
       throw new BadRequestException(`${label} 必须是数字`);
@@ -944,7 +976,7 @@ export class RuntimeFormService {
     }
 
     if (
-      [FormFieldType.DATE, FormFieldType.DATETIME].includes(type) &&
+      (type === FormFieldType.DATE || type === FormFieldType.DATETIME) &&
       typeof value !== 'string'
     ) {
       throw new BadRequestException(`${label} 必须是日期字符串`);
@@ -970,17 +1002,21 @@ export class RuntimeFormService {
       }
     }
 
-    const args = dependencies;
-    const values = dependencies.map((key) => {
+    const scope: Record<string, number> = {};
+    for (const key of dependencies) {
       const value = row[key];
       const numberValue =
         typeof value === 'number' ? value : Number(value ?? 0);
-      return Number.isFinite(numberValue) ? numberValue : 0;
-    });
+      scope[key] = Number.isFinite(numberValue) ? numberValue : 0;
+    }
+
+    const normalized = expression.replace(
+      /[A-Za-z_][A-Za-z0-9_]*/g,
+      (identifier) => String(scope[identifier] ?? 0),
+    );
 
     try {
-      const fn = new Function(...args, `"use strict"; return (${expression});`);
-      const result = fn(...values);
+      const result = this.evaluateNumericExpression(normalized);
 
       if (typeof result !== 'number' || !Number.isFinite(result)) {
         throw new Error('invalid formula result');
@@ -990,6 +1026,79 @@ export class RuntimeFormService {
     } catch {
       throw new BadRequestException(`${label} 公式计算失败`);
     }
+  }
+
+  private evaluateNumericExpression(expression: string): number {
+    let index = 0;
+    const source = expression.replace(/\s+/g, '');
+
+    const peek = () => source[index];
+    const consume = () => source[index++];
+
+    const parseExpression = (): number => {
+      let value = parseTerm();
+
+      while (peek() === '+' || peek() === '-') {
+        const operator = consume();
+        const right = parseTerm();
+        value = operator === '+' ? value + right : value - right;
+      }
+
+      return value;
+    };
+
+    const parseTerm = (): number => {
+      let value = parseFactor();
+
+      while (peek() === '*' || peek() === '/') {
+        const operator = consume();
+        const right = parseFactor();
+        if (operator === '*') {
+          value *= right;
+        } else {
+          if (right === 0) throw new Error('division by zero');
+          value /= right;
+        }
+      }
+
+      return value;
+    };
+
+    const parseFactor = (): number => {
+      const char = peek();
+
+      if (char === '(') {
+        consume();
+        const value = parseExpression();
+        if (consume() !== ')') throw new Error('missing closing parenthesis');
+        return value;
+      }
+
+      if (char === '+' || char === '-') {
+        const operator = consume();
+        const value = parseFactor();
+        return operator === '-' ? -value : value;
+      }
+
+      const start = index;
+      while (/[0-9.]/.test(peek() ?? '')) {
+        consume();
+      }
+
+      if (start === index) throw new Error('expected number');
+
+      const token = source.slice(start, index);
+      if (!/^\d+(\.\d+)?$/.test(token)) throw new Error('invalid number');
+
+      return Number(token);
+    };
+
+    if (!source.length) throw new Error('empty expression');
+
+    const result = parseExpression();
+    if (index !== source.length) throw new Error('unexpected trailing input');
+
+    return result;
   }
 
   private hasValue(value: unknown) {

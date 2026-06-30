@@ -19,6 +19,7 @@ import { CreateFormTableDto } from './dto/create-form-table.dto';
 import { UpdateFormTableDto } from './dto/update-form-table.dto';
 import { CreateFormFieldDto } from './dto/create-form-field.dto';
 import { UpdateFormFieldDto } from './dto/update-form-field.dto';
+import type { FormSnapshot } from '../form-snapshot/form-snapshot.types';
 
 @Injectable()
 export class MetadataService {
@@ -35,6 +36,98 @@ export class MetadataService {
       },
     },
   };
+
+  private async hasPublishedVersion(formId: string) {
+    const count = await this.prisma.formVersion.count({
+      where: { formId },
+    });
+
+    return count > 0;
+  }
+
+  private async wasTablePublished(formId: string, tableId: string) {
+    const versions = await this.prisma.formVersion.findMany({
+      where: { formId },
+      select: { snapshot: true },
+    });
+
+    return versions.some((version) => {
+      const snapshot = version.snapshot as unknown as FormSnapshot;
+      return snapshot.tables.some((table) => table.id === tableId);
+    });
+  }
+
+  private async wasFieldPublished(formId: string, fieldId: string) {
+    const versions = await this.prisma.formVersion.findMany({
+      where: { formId },
+      select: { snapshot: true },
+    });
+
+    return versions.some((version) => {
+      const snapshot = version.snapshot as unknown as FormSnapshot;
+
+      return snapshot.tables.some((table) =>
+        table.fields.some((field) => field.id === fieldId),
+      );
+    });
+  }
+
+  private async assertFormStructuralFieldsNotChanged(
+    form: { id: string; code: string },
+    dto: UpdateFormDto,
+  ) {
+    if (dto.code === undefined || dto.code === form.code) return;
+
+    if (await this.hasPublishedVersion(form.id)) {
+      throw new BadRequestException(
+        '表单发布后不允许修改 code，请新建表单或新增版本字段',
+      );
+    }
+  }
+
+  private async assertTableStructuralFieldsNotChanged(
+    table: {
+      id: string;
+      formId: string;
+      code: string;
+      type: FormTableType;
+      parentId: string | null;
+    },
+    dto: UpdateFormTableDto,
+  ) {
+    const changed =
+      (dto.code !== undefined && dto.code !== table.code) ||
+      (dto.type !== undefined && dto.type !== table.type) ||
+      (dto.parentId !== undefined && dto.parentId !== table.parentId);
+
+    if (!changed) return;
+
+    if (await this.wasTablePublished(table.formId, table.id)) {
+      throw new BadRequestException('表发布后不允许修改 code、type、parentId');
+    }
+  }
+
+  private async assertFieldStructuralFieldsNotChanged(
+    field: {
+      id: string;
+      code: string;
+      type: FormFieldType;
+      table: { formId: string };
+    },
+    dto: UpdateFormFieldDto,
+  ) {
+    const changed =
+      (dto.code !== undefined && dto.code !== field.code) ||
+      (dto.type !== undefined && dto.type !== field.type);
+
+    if (!changed) return;
+
+    if (await this.wasFieldPublished(field.table.formId, field.id)) {
+      throw new BadRequestException(
+        '字段发布后不允许修改 code 或 type，请新增字段替代',
+      );
+    }
+  }
 
   async createSystemForm(dto: CreateFormDto) {
     return this.prisma.formDefinition.create({
@@ -118,6 +211,7 @@ export class MetadataService {
   async updateForm(id: string, dto: UpdateFormDto, user?: CurrentUser) {
     const form = await this.prisma.formDefinition.findUnique({ where: { id } });
     if (!form) throw new NotFoundException('表单不存在');
+    await this.assertFormStructuralFieldsNotChanged(form, dto);
 
     if (
       user &&
@@ -135,7 +229,6 @@ export class MetadataService {
         layout: dto.layout as Prisma.InputJsonValue,
         config: dto.config as Prisma.InputJsonValue,
         sort: dto.sort,
-        version: { increment: 1 },
       },
       include: this.includeFull,
     });
@@ -166,7 +259,6 @@ export class MetadataService {
       where: { id },
       data: {
         status: FormStatus.ENABLED,
-        version: { increment: 1 },
       },
       include: this.includeFull,
     });
@@ -188,7 +280,6 @@ export class MetadataService {
       where: { id },
       data: {
         status: FormStatus.DISABLED,
-        version: { increment: 1 },
       },
       include: this.includeFull,
     });
@@ -242,11 +333,41 @@ export class MetadataService {
     if (!table) throw new NotFoundException('表不存在');
 
     await this.assertCanOperateForm(table.formId, user);
+    await this.assertTableStructuralFieldsNotChanged(table, dto);
+
+    const nextType = dto.type ?? table.type;
+
+    if (dto.parentId && dto.parentId === tableId) {
+      throw new BadRequestException('父表不能指向自己');
+    }
+
+    if (nextType === FormTableType.SUB && dto.parentId) {
+      const parent = await this.prisma.formTable.findFirst({
+        where: { id: dto.parentId, formId: table.formId },
+      });
+
+      if (!parent) throw new BadRequestException('父表不存在');
+    }
+
+    if (nextType === FormTableType.MAIN && table.type !== FormTableType.MAIN) {
+      const exists = await this.prisma.formTable.findFirst({
+        where: {
+          formId: table.formId,
+          type: FormTableType.MAIN,
+          id: { not: tableId },
+        },
+      });
+
+      if (exists) throw new BadRequestException('一个表单只能有一张主表');
+    }
 
     return this.prisma.formTable.update({
       where: { id: tableId },
       data: {
+        code: dto.code,
         name: dto.name,
+        type: dto.type,
+        parentId: nextType === FormTableType.MAIN ? null : dto.parentId,
         layout: dto.layout as Prisma.InputJsonValue,
         config: dto.config as Prisma.InputJsonValue,
         sort: dto.sort,
@@ -304,12 +425,14 @@ export class MetadataService {
     if (!field) throw new NotFoundException('字段不存在');
 
     await this.assertCanOperateForm(field.table.formId, user);
+    await this.assertFieldStructuralFieldsNotChanged(field, dto);
 
     if (dto.type) this.validateFieldConfig(dto.type, dto);
 
     return this.prisma.formField.update({
       where: { id: fieldId },
       data: {
+        code: dto.code,
         name: dto.name,
         type: dto.type,
         required: dto.required,

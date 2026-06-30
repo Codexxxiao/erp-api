@@ -158,11 +158,6 @@ export class FormSchemaProvisionService {
         await this.ensureBaseTable(tx, plan);
         await this.ensureIndexes(tx, plan);
 
-        await tx.formPhysicalColumn.updateMany({
-          where: { physicalTableId: physicalTable.id },
-          data: { isActive: false },
-        });
-
         for (const column of plan.columns) {
           await this.ensureColumn(
             tx,
