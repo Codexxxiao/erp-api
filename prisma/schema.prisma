@@ -1248,3 +1248,31 @@ model PackageInstallLog {
   @@index([level])
   @@index([createdAt])
 }
+
+enum PackageTenantVersionStatus {
+  INSTALLED
+  UPGRADE_AVAILABLE
+  DISABLED
+}
+
+model PackageTenantVersion {
+  id               String                     @id @default(uuid())
+  tenantId         String
+  packageId        String
+  packageCode      String
+  packageName      String
+  currentVersionId String
+  currentVersionNo Int
+  lastInstallId    String?
+  status           PackageTenantVersionStatus @default(INSTALLED)
+  installedById    String?
+  installedAt      DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
+
+  @@unique([tenantId, packageId])
+  @@index([tenantId])
+  @@index([packageId])
+  @@index([currentVersionId])
+  @@index([lastInstallId])
+  @@index([status])
+}

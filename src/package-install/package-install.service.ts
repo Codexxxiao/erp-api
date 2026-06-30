@@ -15,6 +15,7 @@ import {
   Prisma,
   WorkflowDefinitionStatus,
   PhysicalSchemaStatus,
+  PackageTenantVersionStatus,
 } from '../generated/prisma/client';
 import type { CurrentUser } from '../common/types/current-user';
 import { PrismaService } from '../prisma/prisma.service';
@@ -56,6 +57,13 @@ type SnapshotTableForValidation = {
 type FormVersionSnapshotForValidation = {
   tables?: SnapshotTableForValidation[];
 };
+
+type InstallablePackageVersion = Prisma.PackageVersionGetPayload<{
+  include: {
+    package: true;
+    assets: true;
+  };
+}>;
 
 type InstallContext = {
   tenantId: string;
@@ -218,8 +226,7 @@ export class PackageInstallService {
         );
       }
 
-      const snapshot =
-        formVersion.snapshot as FormVersionSnapshotForValidation;
+      const snapshot = formVersion.snapshot as FormVersionSnapshotForValidation;
       const snapshotTables = snapshot.tables ?? [];
 
       const physicalTables = await this.prisma.formPhysicalTable.findMany({
@@ -677,17 +684,27 @@ export class PackageInstallService {
         summary,
       );
 
-      return this.prisma.packageInstall.update({
-        where: { id: install.id },
-        data: {
-          status: PackageInstallStatus.SUCCESS,
-          finishedAt: new Date(),
-          summary: this.toJson(summary),
-        },
-        include: {
-          assets: { orderBy: { createdAt: 'asc' } },
-          logs: { orderBy: { createdAt: 'asc' } },
-        },
+      return this.prisma.$transaction(async (tx) => {
+        await this.upsertTenantPackageVersion(
+          tx,
+          dto.tenantId,
+          version,
+          install.id,
+          user.id,
+        );
+
+        return tx.packageInstall.update({
+          where: { id: install.id },
+          data: {
+            status: PackageInstallStatus.SUCCESS,
+            finishedAt: new Date(),
+            summary: this.toJson(summary),
+          },
+          include: {
+            assets: { orderBy: { createdAt: 'asc' } },
+            logs: { orderBy: { createdAt: 'asc' } },
+          },
+        });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '套餐安装失败';
@@ -1474,6 +1491,44 @@ export class PackageInstallService {
     }, {});
   }
 
+  private async upsertTenantPackageVersion(
+    tx: Tx,
+    tenantId: string,
+    version: InstallablePackageVersion,
+    installId: string,
+    userId: string,
+  ) {
+    return tx.packageTenantVersion.upsert({
+      where: {
+        tenantId_packageId: {
+          tenantId,
+          packageId: version.packageId,
+        },
+      },
+      update: {
+        packageCode: version.package.code,
+        packageName: version.package.name,
+        currentVersionId: version.id,
+        currentVersionNo: version.versionNo,
+        lastInstallId: installId,
+        status: PackageTenantVersionStatus.INSTALLED,
+        installedById: userId,
+        installedAt: new Date(),
+      },
+      create: {
+        tenantId,
+        packageId: version.packageId,
+        packageCode: version.package.code,
+        packageName: version.package.name,
+        currentVersionId: version.id,
+        currentVersionNo: version.versionNo,
+        lastInstallId: installId,
+        status: PackageTenantVersionStatus.INSTALLED,
+        installedById: userId,
+      },
+    });
+  }
+
   private async ensureTenant(tenantId: string) {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: tenantId },
@@ -1482,7 +1537,9 @@ export class PackageInstallService {
     return tenant;
   }
 
-  private async loadPublishedVersion(packageVersionId: string) {
+  private async loadPublishedVersion(
+    packageVersionId: string,
+  ): Promise<InstallablePackageVersion> {
     const version = await this.prisma.packageVersion.findUnique({
       where: { id: packageVersionId },
       include: {
