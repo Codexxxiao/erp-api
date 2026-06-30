@@ -14,13 +14,48 @@ import {
   PackageVersionStatus,
   Prisma,
   WorkflowDefinitionStatus,
+  PhysicalSchemaStatus,
 } from '../generated/prisma/client';
 import type { CurrentUser } from '../common/types/current-user';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePackageInstallDto } from './dto/create-package-install.dto';
 import { QueryPackageInstallDto } from './dto/query-package-install.dto';
+import { FormSchemaProvisionService } from '../form-schema-provision/form-schema-provision.service';
 
 type Tx = Prisma.TransactionClient;
+
+type ProvisionTarget = {
+  formId: string;
+  formCode: string;
+  version: number;
+};
+
+type ProvisionResultItem = ProvisionTarget & {
+  status: 'SUCCESS' | 'FAILED';
+  physicalTableCount?: number;
+  error?: string;
+};
+
+type ValidationResultItem = ProvisionTarget & {
+  status: 'SUCCESS';
+  snapshotTableCount: number;
+  physicalTableCount: number;
+};
+
+type SnapshotFieldForValidation = {
+  id: string;
+  code: string;
+};
+
+type SnapshotTableForValidation = {
+  id: string;
+  code: string;
+  fields?: SnapshotFieldForValidation[];
+};
+
+type FormVersionSnapshotForValidation = {
+  tables?: SnapshotTableForValidation[];
+};
 
 type InstallContext = {
   tenantId: string;
@@ -33,13 +68,246 @@ type InstallContext = {
   tableIdMap: Map<string, string>;
   fieldIdMap: Map<string, string>;
   menuIdMap: Map<string, string>;
+  provisionTargets: Map<string, ProvisionTarget>;
 };
 
 type ExistingTarget = { id: string } | null;
 
 @Injectable()
 export class PackageInstallService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly formSchemaProvisionService: FormSchemaProvisionService,
+  ) {}
+
+  private sortAssetsForInstall(assets: PackageAsset[]) {
+    const order = new Map<PackageAssetType, number>([
+      [PackageAssetType.PERMISSION, 10],
+      [PackageAssetType.MENU, 20],
+      [PackageAssetType.DICTIONARY, 30],
+      [PackageAssetType.DATA_SOURCE, 40],
+      [PackageAssetType.FORM, 50],
+      [PackageAssetType.FORM_VERSION, 60],
+      [PackageAssetType.LIST_VIEW, 70],
+      [PackageAssetType.DOCUMENT_FLOW, 80],
+      [PackageAssetType.WORKFLOW, 90],
+      [PackageAssetType.MESSAGE_TEMPLATE, 100],
+    ]);
+
+    return [...assets].sort((a, b) => {
+      const left = order.get(a.type) ?? 999;
+      const right = order.get(b.type) ?? 999;
+      if (left !== right) return left - right;
+      return a.sort - b.sort;
+    });
+  }
+
+  private async provisionInstalledForms(
+    installId: string,
+    user: CurrentUser,
+    tenantId: string,
+    targets: ProvisionTarget[],
+  ) {
+    const uniqueTargets = this.uniqueProvisionTargets(targets);
+
+    if (uniqueTargets.length === 0) {
+      await this.createInstallLog(
+        installId,
+        PackageInstallLogLevel.INFO,
+        '本次安装没有需要生成实体表的表单版本',
+      );
+
+      return { total: 0, success: 0, failed: 0, items: [] };
+    }
+
+    const provisionUser: CurrentUser = {
+      ...user,
+      tenantId,
+      tenantCode: user.tenantId === tenantId ? user.tenantCode : null,
+      isTenantAdmin: true,
+    };
+
+    const items: ProvisionResultItem[] = [];
+
+    for (const target of uniqueTargets) {
+      try {
+        await this.createInstallLog(
+          installId,
+          PackageInstallLogLevel.INFO,
+          `开始生成实体表：${target.formCode}@${target.version}`,
+          target,
+        );
+
+        const result = await this.formSchemaProvisionService.publishTenantForm(
+          provisionUser,
+          target.formId,
+          target.version,
+        );
+
+        items.push({
+          ...target,
+          status: 'SUCCESS',
+          physicalTableCount: result.physicalTables.length,
+        });
+
+        await this.createInstallLog(
+          installId,
+          PackageInstallLogLevel.INFO,
+          `实体表生成成功：${target.formCode}@${target.version}`,
+          {
+            formId: target.formId,
+            version: target.version,
+            physicalTableCount: result.physicalTables.length,
+          },
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : '实体表生成失败';
+
+        items.push({
+          ...target,
+          status: 'FAILED',
+          error: message,
+        });
+
+        await this.createInstallLog(
+          installId,
+          PackageInstallLogLevel.ERROR,
+          `实体表生成失败：${target.formCode}@${target.version}`,
+          { ...target, error: message },
+        );
+      }
+    }
+
+    const failed = items.filter((item) => item.status === 'FAILED');
+
+    if (failed.length > 0) {
+      throw new BadRequestException(
+        `实体表生成失败：${failed.map((item) => this.formatProvisionTarget(item)).join(', ')}`,
+      );
+    }
+
+    return {
+      total: items.length,
+      success: items.length,
+      failed: 0,
+      items,
+    };
+  }
+
+  private async validateProvisionTargets(
+    installId: string,
+    tenantId: string,
+    targets: ProvisionTarget[],
+  ) {
+    const uniqueTargets = this.uniqueProvisionTargets(targets);
+    const items: ValidationResultItem[] = [];
+
+    for (const target of uniqueTargets) {
+      const formVersion = await this.prisma.formVersion.findFirst({
+        where: {
+          tenantId,
+          formId: target.formId,
+          version: target.version,
+        },
+      });
+
+      if (!formVersion) {
+        throw new BadRequestException(
+          `安装后校验失败，表单版本不存在：${target.formCode}@${target.version}`,
+        );
+      }
+
+      const snapshot =
+        formVersion.snapshot as FormVersionSnapshotForValidation;
+      const snapshotTables = snapshot.tables ?? [];
+
+      const physicalTables = await this.prisma.formPhysicalTable.findMany({
+        where: {
+          tenantId,
+          formId: target.formId,
+          formVersionId: formVersion.id,
+          status: PhysicalSchemaStatus.SYNCED,
+        },
+        include: { columns: true },
+      });
+
+      for (const table of snapshotTables) {
+        const physicalTable = physicalTables.find(
+          (item) => item.tableId === table.id,
+        );
+
+        if (!physicalTable) {
+          throw new BadRequestException(
+            `安装后校验失败，物理表缺失：${target.formCode}.${table.code}`,
+          );
+        }
+
+        for (const field of table.fields ?? []) {
+          const physicalColumn = physicalTable.columns.find(
+            (item) => item.fieldId === field.id,
+          );
+
+          if (!physicalColumn) {
+            throw new BadRequestException(
+              `安装后校验失败，物理列缺失：${target.formCode}.${table.code}.${field.code}`,
+            );
+          }
+        }
+      }
+
+      items.push({
+        ...target,
+        status: 'SUCCESS',
+        snapshotTableCount: snapshotTables.length,
+        physicalTableCount: physicalTables.length,
+      });
+    }
+
+    await this.createInstallLog(
+      installId,
+      PackageInstallLogLevel.INFO,
+      '安装后实体表校验通过',
+      { items },
+    );
+
+    return {
+      total: items.length,
+      success: items.length,
+      failed: 0,
+      items,
+    };
+  }
+
+  private formatProvisionTarget(target: ProvisionTarget) {
+    return `${target.formCode}@${target.version}`;
+  }
+
+  private uniqueProvisionTargets(targets: ProvisionTarget[]) {
+    const map = new Map<string, ProvisionTarget>();
+
+    for (const target of targets) {
+      map.set(`${target.formId}:${target.version}`, target);
+    }
+
+    return Array.from(map.values());
+  }
+
+  private async createInstallLog(
+    installId: string,
+    level: PackageInstallLogLevel,
+    message: string,
+    detail?: unknown,
+  ) {
+    return this.prisma.packageInstallLog.create({
+      data: {
+        installId,
+        level,
+        message,
+        detail: this.toJson(detail),
+      },
+    });
+  }
 
   async preview(dto: CreatePackageInstallDto) {
     const tenant = await this.ensureTenant(dto.tenantId);
@@ -321,6 +589,7 @@ export class PackageInstallService {
 
     await this.ensureTenant(dto.tenantId);
     const version = await this.loadPublishedVersion(dto.packageVersionId);
+    const sortedAssets = this.sortAssetsForInstall(version.assets);
 
     const conflicts = await this.preview(dto);
     if (
@@ -342,7 +611,7 @@ export class PackageInstallService {
     });
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
+      const copyResult = await this.prisma.$transaction(async (tx) => {
         const ctx: InstallContext = {
           tenantId: dto.tenantId,
           userId: user.id,
@@ -354,41 +623,71 @@ export class PackageInstallService {
           tableIdMap: new Map(),
           fieldIdMap: new Map(),
           menuIdMap: new Map(),
+          provisionTargets: new Map(),
         };
 
         await this.addLog(
           tx,
           install.id,
           PackageInstallLogLevel.INFO,
-          '开始安装套餐',
+          '开始安装套餐配置资产',
         );
 
-        for (const asset of version.assets) {
+        for (const asset of sortedAssets) {
           await this.installAsset(tx, install.id, asset, ctx);
         }
 
-        const summary = await this.buildSummary(tx, install.id);
+        const assetSummary = await this.buildSummary(tx, install.id);
+        const provisionTargets = Array.from(ctx.provisionTargets.values());
 
         await this.addLog(
           tx,
           install.id,
           PackageInstallLogLevel.INFO,
-          '套餐安装完成',
-          summary,
+          '套餐配置资产安装完成，准备生成实体表',
+          { assetSummary, provisionTargets },
         );
 
-        return tx.packageInstall.update({
-          where: { id: install.id },
-          data: {
-            status: PackageInstallStatus.SUCCESS,
-            finishedAt: new Date(),
-            summary: this.toJson(summary),
-          },
-          include: {
-            assets: { orderBy: { createdAt: 'asc' } },
-            logs: { orderBy: { createdAt: 'asc' } },
-          },
-        });
+        return { assetSummary, provisionTargets };
+      });
+
+      const provisionSummary = await this.provisionInstalledForms(
+        install.id,
+        user,
+        dto.tenantId,
+        copyResult.provisionTargets,
+      );
+
+      const validationSummary = await this.validateProvisionTargets(
+        install.id,
+        dto.tenantId,
+        copyResult.provisionTargets,
+      );
+
+      const summary = {
+        assets: copyResult.assetSummary,
+        provision: provisionSummary,
+        validation: validationSummary,
+      };
+
+      await this.createInstallLog(
+        install.id,
+        PackageInstallLogLevel.INFO,
+        '套餐安装完成',
+        summary,
+      );
+
+      return this.prisma.packageInstall.update({
+        where: { id: install.id },
+        data: {
+          status: PackageInstallStatus.SUCCESS,
+          finishedAt: new Date(),
+          summary: this.toJson(summary),
+        },
+        include: {
+          assets: { orderBy: { createdAt: 'asc' } },
+          logs: { orderBy: { createdAt: 'asc' } },
+        },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '套餐安装失败';
@@ -402,13 +701,14 @@ export class PackageInstallService {
         },
       });
 
-      await this.prisma.packageInstallLog.create({
-        data: {
-          installId: install.id,
-          level: PackageInstallLogLevel.ERROR,
-          message,
-        },
-      });
+      await this.createInstallLog(
+        install.id,
+        PackageInstallLogLevel.ERROR,
+        message,
+        error instanceof Error
+          ? { name: error.name, message: error.message }
+          : undefined,
+      );
 
       throw error;
     }
@@ -755,6 +1055,13 @@ export class PackageInstallService {
       : await tx.formVersion.create({ data });
 
     ctx.formVersionIdMap.set(s.id, formVersion.id);
+
+    ctx.provisionTargets.set(`${formId}:${s.version}`, {
+      formId,
+      formCode: s.formCode,
+      version: s.version,
+    });
+
     return formVersion.id;
   }
 
