@@ -18,6 +18,7 @@ import { DocumentFlowModule } from './document-flow/document-flow.module';
 import { FormSnapshotModule } from './form-snapshot/form-snapshot.module';
 import { WorkflowModule } from './workflow/workflow.module';
 import { MessageModule } from './message/message.module';
+import { ListViewModule } from './list-view/list-view.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { MessageModule } from './message/message.module';
     FormSnapshotModule,
     WorkflowModule,
     MessageModule,
+    ListViewModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

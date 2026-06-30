@@ -35,6 +35,7 @@ model Tenant {
   messages         Message[]
   messageTemplates MessageTemplate[]
   messageRecipients MessageRecipient[]
+  listViews ListView[]
 }
 
 model User {
@@ -954,4 +955,111 @@ model MessageTemplate {
   @@index([tenantId])
   @@index([scopeKey])
   @@index([code])
+}
+
+
+enum ListViewStatus {
+  DRAFT
+  ENABLED
+  DISABLED
+}
+
+enum ListViewColumnSource {
+  SYSTEM
+  FIELD
+}
+
+enum ListViewFilterOperator {
+  EQ
+  NE
+  CONTAINS
+  STARTS_WITH
+  ENDS_WITH
+  GT
+  GTE
+  LT
+  LTE
+  BETWEEN
+  IN
+  IS_NULL
+  IS_NOT_NULL
+}
+
+enum ListViewSortDirection {
+  ASC
+  DESC
+}
+
+model ListView {
+  id            String         @id @default(uuid())
+  tenantId      String
+  formId        String
+  formVersionId String?
+  code          String
+  name          String
+  status        ListViewStatus @default(DRAFT)
+  isDefault     Boolean        @default(false)
+  config        Json?
+  sort          Int            @default(0)
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  columns ListViewColumn[]
+  filters ListViewFilter[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([formId])
+  @@index([formVersionId])
+}
+
+model ListViewColumn {
+  id            String                 @id @default(uuid())
+  viewId        String
+  source        ListViewColumnSource   @default(FIELD)
+  systemKey     String?
+  fieldId       String?
+  fieldCode     String?
+  title         String
+  width         Int?
+  fixed         String?
+  hidden        Boolean                @default(false)
+  sortable      Boolean                @default(true)
+  sortDirection ListViewSortDirection?
+  config        Json?
+  sort          Int                    @default(0)
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+
+  view ListView @relation(fields: [viewId], references: [id], onDelete: Cascade)
+
+  @@index([viewId])
+  @@index([fieldId])
+  @@index([fieldCode])
+  @@index([systemKey])
+}
+
+model ListViewFilter {
+  id           String                 @id @default(uuid())
+  viewId       String
+  source       ListViewColumnSource   @default(FIELD)
+  systemKey    String?
+  fieldId      String?
+  fieldCode    String?
+  label        String
+  operator     ListViewFilterOperator
+  defaultValue Json?
+  required     Boolean                @default(false)
+  config       Json?
+  sort         Int                    @default(0)
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  view ListView @relation(fields: [viewId], references: [id], onDelete: Cascade)
+
+  @@index([viewId])
+  @@index([fieldId])
+  @@index([fieldCode])
+  @@index([systemKey])
 }
