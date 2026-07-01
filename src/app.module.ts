@@ -39,6 +39,7 @@ import { PurchaseOrderModule } from './purchase-order/purchase-order.module';
 import { InboundReceiptModule } from './inbound-receipt/inbound-receipt.module';
 import { InventoryModule } from './inventory/inventory.module';
 import { OutboundShipmentModule } from './outbound-shipment/outbound-shipment.module';
+import { AccountsReceivableModule } from './accounts-receivable/accounts-receivable.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { OutboundShipmentModule } from './outbound-shipment/outbound-shipment.mo
     InboundReceiptModule,
     InventoryModule,
     OutboundShipmentModule,
+    AccountsReceivableModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

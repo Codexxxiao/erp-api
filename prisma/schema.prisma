@@ -2690,3 +2690,158 @@ model OutboundShipmentItem {
   @@index([warehouseCode])
   @@index([status])
 }
+
+enum AccountsReceivableSourceType {
+  MANUAL
+  SALES_ORDER
+  OUTBOUND_SHIPMENT
+}
+
+enum AccountsReceivableStatus {
+  DRAFT
+  CONFIRMED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum AccountsReceivablePaymentStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum AccountsReceivablePaymentMethod {
+  BANK_TRANSFER
+  CASH
+  CHECK
+  ALIPAY
+  WECHAT
+  OTHER
+}
+
+model AccountsReceivable {
+  id                 String                       @id @default(uuid())
+  tenantId           String
+  receivableNo       String
+  sourceType         AccountsReceivableSourceType @default(MANUAL)
+  sourceId           String?
+  sourceNo           String?
+  salesOrderId       String?
+  outboundShipmentId String?
+  customerId         String?
+  customerName       String?
+  subject            String
+  status             AccountsReceivableStatus     @default(DRAFT)
+  currencyCode       String
+  exchangeRate       Decimal?                     @db.Decimal(18, 6)
+  totalAmount        Decimal                      @default(0) @db.Decimal(18, 4)
+  receivedAmount     Decimal                      @default(0) @db.Decimal(18, 4)
+  outstandingAmount  Decimal                      @default(0) @db.Decimal(18, 4)
+  dueDate            DateTime?
+  confirmedAt        DateTime?
+  closedAt           DateTime?
+  cancelledAt        DateTime?
+  remark             String?
+  extra              Json?
+  createdById        String
+  updatedById        String?
+  createdAt          DateTime                     @default(now())
+  updatedAt          DateTime                     @updatedAt
+
+  items       AccountsReceivableItem[]
+  allocations AccountsReceivablePaymentAllocation[]
+
+  @@unique([tenantId, receivableNo])
+  @@index([tenantId])
+  @@index([sourceType, sourceId])
+  @@index([salesOrderId])
+  @@index([outboundShipmentId])
+  @@index([customerId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AccountsReceivableItem {
+  id            String   @id @default(uuid())
+  tenantId      String
+  receivableId  String
+  sourceItemId  String?
+  productId     String?
+  productCode   String?
+  productNameCn String?
+  productNameEn String?
+  categoryCode  String?
+  unitCode      String?
+  quantity      Decimal  @db.Decimal(18, 4)
+  unitPrice     Decimal  @db.Decimal(18, 4)
+  amount        Decimal  @default(0) @db.Decimal(18, 4)
+  currencyCode  String?
+  remark        String?
+  extra         Json?
+  sort          Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  receivable AccountsReceivable @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([receivableId])
+  @@index([sourceItemId])
+  @@index([productId])
+  @@index([productCode])
+}
+
+model AccountsReceivablePayment {
+  id              String                          @id @default(uuid())
+  tenantId        String
+  paymentNo       String
+  customerId      String?
+  customerName    String?
+  status          AccountsReceivablePaymentStatus @default(DRAFT)
+  paymentDate     DateTime?
+  method          AccountsReceivablePaymentMethod @default(BANK_TRANSFER)
+  bankAccountNo   String?
+  transactionNo   String?
+  currencyCode    String
+  amount          Decimal                         @db.Decimal(18, 4)
+  allocatedAmount Decimal                         @default(0) @db.Decimal(18, 4)
+  unappliedAmount Decimal                         @default(0) @db.Decimal(18, 4)
+  confirmedAt     DateTime?
+  cancelledAt     DateTime?
+  remark          String?
+  extra           Json?
+  createdById     String
+  updatedById     String?
+  createdAt       DateTime                        @default(now())
+  updatedAt       DateTime                        @updatedAt
+
+  allocations AccountsReceivablePaymentAllocation[]
+
+  @@unique([tenantId, paymentNo])
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([status])
+  @@index([paymentDate])
+  @@index([createdAt])
+}
+
+model AccountsReceivablePaymentAllocation {
+  id           String   @id @default(uuid())
+  tenantId     String
+  paymentId    String
+  receivableId String
+  amount       Decimal  @db.Decimal(18, 4)
+  currencyCode String
+  remark       String?
+  createdAt    DateTime @default(now())
+
+  payment    AccountsReceivablePayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  receivable AccountsReceivable        @relation(fields: [receivableId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, receivableId])
+  @@index([tenantId])
+  @@index([paymentId])
+  @@index([receivableId])
+}
