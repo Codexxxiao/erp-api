@@ -1846,3 +1846,96 @@ model InquiryItem {
   @@index([productId])
   @@index([productCode])
 }
+
+enum QuotationStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+  CANCELLED
+}
+
+model Quotation {
+  id                  String          @id @default(uuid())
+  tenantId            String
+  quotationNo         String
+  inquiryId           String?
+  customerId          String?
+  customerName        String?
+  customerContactId   String?
+  customerContactName String?
+  subject             String
+  status              QuotationStatus @default(DRAFT)
+  currencyCode        String
+  exchangeRate        Decimal?        @db.Decimal(18, 6)
+  tradeTerm           String?
+  paymentTerm         String?
+  validUntil          DateTime?
+  ownerUserId         String?
+  sentAt              DateTime?
+  acceptedAt          DateTime?
+  rejectedAt          DateTime?
+  closedAt            DateTime?
+  rejectReason        String?
+  subtotalAmount      Decimal         @default(0) @db.Decimal(18, 4)
+  discountAmount      Decimal         @default(0) @db.Decimal(18, 4)
+  taxAmount           Decimal         @default(0) @db.Decimal(18, 4)
+  freightAmount       Decimal         @default(0) @db.Decimal(18, 4)
+  otherAmount         Decimal         @default(0) @db.Decimal(18, 4)
+  totalAmount         Decimal         @default(0) @db.Decimal(18, 4)
+  remark              String?
+  extra               Json?
+  createdById         String
+  updatedById         String?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+
+  items QuotationItem[]
+
+  @@unique([tenantId, quotationNo])
+  @@index([tenantId])
+  @@index([inquiryId])
+  @@index([customerId])
+  @@index([status])
+  @@index([currencyCode])
+  @@index([ownerUserId])
+  @@index([createdAt])
+}
+
+model QuotationItem {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  quotationId          String
+  sourceInquiryItemId  String?
+  productId            String?
+  productCode          String?
+  productNameCn        String?
+  productNameEn        String?
+  categoryCode         String?
+  unitCode             String?
+  description          String?
+  quantity             Decimal  @db.Decimal(18, 4)
+  unitPrice            Decimal  @db.Decimal(18, 4)
+  grossAmount          Decimal  @default(0) @db.Decimal(18, 4)
+  discountRate         Decimal? @db.Decimal(8, 4)
+  discountAmount       Decimal  @default(0) @db.Decimal(18, 4)
+  taxRate              Decimal? @db.Decimal(8, 4)
+  taxAmount            Decimal  @default(0) @db.Decimal(18, 4)
+  amount               Decimal  @default(0) @db.Decimal(18, 4)
+  currencyCode         String?
+  expectedDeliveryDate DateTime?
+  remark               String?
+  extra                Json?
+  sort                 Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([quotationId])
+  @@index([sourceInquiryItemId])
+  @@index([productId])
+  @@index([productCode])
+}
