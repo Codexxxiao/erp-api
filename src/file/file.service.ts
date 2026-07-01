@@ -29,6 +29,14 @@ const BLOCKED_EXTENSIONS = new Set([
   '.vbs',
 ]);
 
+export type ReplaceFileRelationInput = {
+  fileId: string;
+  fieldCode?: string;
+  relationName?: string;
+  sort?: number;
+  extra?: Record<string, unknown>;
+};
+
 @Injectable()
 export class FileService {
   private readonly storageRoot = resolve(
@@ -36,6 +44,63 @@ export class FileService {
   );
 
   constructor(private readonly prisma: PrismaService) {}
+
+  async replaceOwnerRelations(
+    user: CurrentUser,
+    ownerType: string,
+    ownerId: string,
+    relations: ReplaceFileRelationInput[],
+  ) {
+    const tenantId = this.requireTenant(user);
+
+    const uniqueRelations = Array.from(
+      new Map(
+        relations
+          .filter((item) => item.fileId)
+          .map((item) => [
+            `${item.fileId}:${item.fieldCode ?? ''}`,
+            {
+              ...item,
+              fieldCode: item.fieldCode ?? '',
+            },
+          ]),
+      ).values(),
+    );
+
+    await this.assertTenantFiles(
+      tenantId,
+      uniqueRelations.map((item) => item.fileId),
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.fileRelation.deleteMany({
+        where: {
+          tenantId,
+          ownerType,
+          ownerId,
+        },
+      });
+
+      if (uniqueRelations.length === 0) return;
+
+      await tx.fileRelation.createMany({
+        data: uniqueRelations.map((item, index) => ({
+          tenantId,
+          fileId: item.fileId,
+          ownerType,
+          ownerId,
+          fieldCode: item.fieldCode ?? '',
+          relationName: item.relationName,
+          sort: item.sort ?? index,
+          extra: this.toJson(item.extra),
+          createdById: user.id,
+        })),
+        skipDuplicates: true,
+      });
+    });
+
+    return this.findRelations(user, { ownerType, ownerId });
+  }
 
   async upload(
     user: CurrentUser,

@@ -26,6 +26,11 @@ import {
 } from './dto/create-form-record.dto';
 import { UpdateFormRecordDto } from './dto/update-form-record.dto';
 import { QueryFormRecordDto } from './dto/query-form-record.dto';
+import { FileService, ReplaceFileRelationInput } from '../file/file.service';
+
+type FileRelationWithFile = Prisma.FileRelationGetPayload<{
+  include: { file: true };
+}>;
 
 type RuntimeForm = Prisma.FormDefinitionGetPayload<{
   include: {
@@ -58,7 +63,10 @@ type SchemaBundle = {
 
 @Injectable()
 export class RuntimeFormService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly fileService: FileService,
+  ) {}
 
   async create(user: CurrentUser, dto: CreateFormRecordDto) {
     const tenantId = requireTenantId(user);
@@ -68,12 +76,21 @@ export class RuntimeFormService {
       dto.formCode,
     );
 
+    const runtimeForm = this.snapshotToRuntimeForm(
+      bundle.formVersion.snapshot as unknown as FormSnapshot,
+    );
+
     const normalized = this.normalizeAndValidate(
-      this.snapshotToRuntimeForm(
-        bundle.formVersion.snapshot as unknown as FormSnapshot,
-      ),
+      runtimeForm,
       dto.mainData,
       dto.details ?? [],
+    );
+
+    await this.assertRuntimeFiles(
+      tenantId,
+      runtimeForm,
+      normalized.mainData,
+      normalized.details,
     );
 
     const recordNo = this.generateRecordNo(bundle.form.code);
@@ -100,9 +117,7 @@ export class RuntimeFormService {
       await this.replaceAllPhysicalRows(tx, {
         tenantId,
         recordId: record.id,
-        form: this.snapshotToRuntimeForm(
-          bundle.formVersion.snapshot as unknown as FormSnapshot,
-        ),
+        form: runtimeForm,
         physicalTables: bundle.physicalTables,
         mainData: normalized.mainData,
         details: normalized.details,
@@ -113,6 +128,14 @@ export class RuntimeFormService {
 
       return record.id;
     });
+
+    await this.syncRecordFileRelations(
+      user,
+      recordId,
+      runtimeForm,
+      normalized.mainData,
+      normalized.details,
+    );
 
     return this.findOne(user, recordId);
   }
@@ -188,10 +211,18 @@ export class RuntimeFormService {
       runtimeForm,
       physicalTables,
     );
+    const fileRelations = await this.fileService.findRelations(user, {
+      ownerType: 'form_record',
+      ownerId: record.id,
+    });
 
     return {
       ...record,
-      physicalData,
+      physicalData: this.attachFileMetadata(
+        physicalData,
+        runtimeForm,
+        fileRelations,
+      ),
     };
   }
 
@@ -232,6 +263,19 @@ export class RuntimeFormService {
     const normalizedDetails = dto.details
       ? this.normalizeDetails(runtimeForm, dto.details)
       : null;
+
+    const finalMainData =
+      normalizedMain ?? (record.mainData as Record<string, unknown>);
+
+    const finalDetails =
+      normalizedDetails ?? (await this.loadSnapshotDetails(id, runtimeForm));
+
+    await this.assertRuntimeFiles(
+      tenantId,
+      runtimeForm,
+      finalMainData,
+      finalDetails,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       if (normalizedMain) {
@@ -275,6 +319,14 @@ export class RuntimeFormService {
         });
       }
     });
+
+    await this.syncRecordFileRelations(
+      user,
+      id,
+      runtimeForm,
+      finalMainData,
+      finalDetails,
+    );
 
     return this.findOne(user, id);
   }
@@ -590,6 +642,10 @@ export class RuntimeFormService {
           value,
           `${label}字段 ${field.name}`,
         );
+
+        if (this.isFileField(field.type)) {
+          result[field.code] = this.toFileIds(value);
+        }
       }
     }
 
@@ -981,6 +1037,10 @@ export class RuntimeFormService {
     ) {
       throw new BadRequestException(`${label} 必须是日期字符串`);
     }
+
+    if (type === FormFieldType.ATTACHMENT || type === FormFieldType.IMAGE) {
+      this.toFileIds(value);
+    }
   }
 
   private evaluateArithmeticFormula(
@@ -1102,9 +1162,236 @@ export class RuntimeFormService {
   }
 
   private hasValue(value: unknown) {
+    if (Array.isArray(value)) return value.length > 0;
     return value !== undefined && value !== null && value !== '';
   }
+  private async assertRuntimeFiles(
+    tenantId: string,
+    form: RuntimeForm,
+    mainData: Record<string, unknown>,
+    details: NormalizedDetail[],
+  ) {
+    const relations = this.collectRuntimeFileRelations(form, mainData, details);
 
+    await this.fileService.assertTenantFiles(
+      tenantId,
+      relations.map((item) => item.fileId),
+    );
+  }
+
+  private async syncRecordFileRelations(
+    user: CurrentUser,
+    recordId: string,
+    form: RuntimeForm,
+    mainData: Record<string, unknown>,
+    details: NormalizedDetail[],
+  ) {
+    const relations = this.collectRuntimeFileRelations(form, mainData, details);
+
+    await this.fileService.replaceOwnerRelations(
+      user,
+      'form_record',
+      recordId,
+      relations,
+    );
+  }
+
+  private collectRuntimeFileRelations(
+    form: RuntimeForm,
+    mainData: Record<string, unknown>,
+    details: NormalizedDetail[],
+  ): ReplaceFileRelationInput[] {
+    const relations: ReplaceFileRelationInput[] = [];
+
+    const mainTable = form.tables.find(
+      (table) => table.type === FormTableType.MAIN,
+    );
+
+    if (mainTable) {
+      for (const field of mainTable.fields.filter((item) =>
+        this.isFileField(item.type),
+      )) {
+        const fileIds = this.toFileIds(mainData[field.code]);
+
+        fileIds.forEach((fileId, index) => {
+          relations.push({
+            fileId,
+            fieldCode: `main.${field.code}`,
+            relationName: field.name,
+            sort: index,
+            extra: {
+              tableType: 'MAIN',
+              tableCode: mainTable.code,
+              fieldCode: field.code,
+              rowIndex: 0,
+            },
+          });
+        });
+      }
+    }
+
+    for (const detail of details) {
+      for (const [rowIndex, row] of detail.rows.entries()) {
+        for (const field of detail.table.fields.filter((item) =>
+          this.isFileField(item.type),
+        )) {
+          const fileIds = this.toFileIds(row[field.code]);
+
+          fileIds.forEach((fileId, index) => {
+            relations.push({
+              fileId,
+              fieldCode: `${detail.table.code}.${rowIndex}.${field.code}`,
+              relationName: field.name,
+              sort: index,
+              extra: {
+                tableType: 'SUB',
+                tableCode: detail.table.code,
+                fieldCode: field.code,
+                rowIndex,
+              },
+            });
+          });
+        }
+      }
+    }
+
+    return relations;
+  }
+
+  private async loadSnapshotDetails(
+    recordId: string,
+    form: RuntimeForm,
+  ): Promise<NormalizedDetail[]> {
+    const rows = await this.prisma.formRecordDetail.findMany({
+      where: { recordId },
+      orderBy: [{ tableCode: 'asc' }, { rowIndex: 'asc' }],
+    });
+
+    return form.tables
+      .filter((table) => table.type === FormTableType.SUB)
+      .map((table) => ({
+        table,
+        rows: rows
+          .filter((row) => row.tableCode === table.code)
+          .sort((a, b) => a.rowIndex - b.rowIndex)
+          .map((row) => row.rowData as Record<string, unknown>),
+      }))
+      .filter((item) => item.rows.length > 0);
+  }
+
+  private attachFileMetadata(
+    physicalData: {
+      mainData: Record<string, unknown>;
+      details: Array<{
+        tableId: string;
+        tableCode: string;
+        tableName: string;
+        rows: Record<string, unknown>[];
+      }>;
+    },
+    form: RuntimeForm,
+    relations: FileRelationWithFile[],
+  ) {
+    const relationMap = new Map<string, ReturnType<typeof this.toFileMeta>[]>();
+
+    for (const relation of relations) {
+      const list = relationMap.get(relation.fieldCode) ?? [];
+      list.push(this.toFileMeta(relation));
+      relationMap.set(relation.fieldCode, list);
+    }
+
+    const mainTable = form.tables.find(
+      (table) => table.type === FormTableType.MAIN,
+    );
+
+    const mainFiles: Record<string, unknown[]> = {};
+
+    if (mainTable) {
+      for (const field of mainTable.fields.filter((item) =>
+        this.isFileField(item.type),
+      )) {
+        const files = relationMap.get(`main.${field.code}`) ?? [];
+        if (files.length > 0) mainFiles[field.code] = files;
+      }
+    }
+
+    const mainData = {
+      ...physicalData.mainData,
+      ...(Object.keys(mainFiles).length > 0 ? { __files: mainFiles } : {}),
+    };
+
+    const details = physicalData.details.map((detail) => {
+      const table = form.tables.find((item) => item.code === detail.tableCode);
+
+      return {
+        ...detail,
+        rows: detail.rows.map((row, rowIndex) => {
+          if (!table) return row;
+
+          const rowFiles: Record<string, unknown[]> = {};
+
+          for (const field of table.fields.filter((item) =>
+            this.isFileField(item.type),
+          )) {
+            const files =
+              relationMap.get(
+                `${detail.tableCode}.${rowIndex}.${field.code}`,
+              ) ?? [];
+
+            if (files.length > 0) rowFiles[field.code] = files;
+          }
+
+          return {
+            ...row,
+            ...(Object.keys(rowFiles).length > 0 ? { __files: rowFiles } : {}),
+          };
+        }),
+      };
+    });
+
+    return {
+      ...physicalData,
+      mainData,
+      details,
+    };
+  }
+
+  private toFileMeta(relation: FileRelationWithFile) {
+    return {
+      relationId: relation.id,
+      fileId: relation.fileId,
+      originalName: relation.file.originalName,
+      mimeType: relation.file.mimeType,
+      extension: relation.file.extension,
+      size: relation.file.size,
+      checksum: relation.file.checksum,
+      fieldCode: relation.fieldCode,
+      relationName: relation.relationName,
+      sort: relation.sort,
+    };
+  }
+
+  private isFileField(type: FormFieldType) {
+    return type === FormFieldType.ATTACHMENT || type === FormFieldType.IMAGE;
+  }
+
+  private toFileIds(value: unknown) {
+    if (!this.hasValue(value)) return [];
+
+    const values = Array.isArray(value) ? value : [value];
+
+    return values.map((item) => {
+      if (typeof item === 'string') return item;
+
+      if (item && typeof item === 'object') {
+        const object = item as { id?: unknown; fileId?: unknown };
+        if (typeof object.fileId === 'string') return object.fileId;
+        if (typeof object.id === 'string') return object.id;
+      }
+
+      throw new BadRequestException('附件字段值必须是 fileId 数组');
+    });
+  }
   private generateRecordNo(formCode: string) {
     const now = new Date();
     const date = now.toISOString().slice(0, 10).replace(/-/g, '');
