@@ -1392,3 +1392,71 @@ model FileRelation {
   @@index([fileId])
   @@index([fieldCode])
 }
+
+enum ImportTaskStatus {
+  CREATED
+  PREVIEWED
+  VALIDATED
+  IMPORTING
+  SUCCESS
+  PARTIAL_SUCCESS
+  FAILED
+}
+
+enum ImportTaskRowStatus {
+  PENDING
+  VALID
+  INVALID
+  SUCCESS
+  FAILED
+}
+
+model ImportTask {
+  id          String           @id @default(uuid())
+  tenantId    String
+  formId      String?
+  formCode    String
+  fileId      String
+  sheetName   String?
+  headerRow   Int              @default(1)
+  dataStartRow Int             @default(2)
+  status      ImportTaskStatus @default(CREATED)
+  mapping     Json?
+  preview     Json?
+  totalRows   Int              @default(0)
+  successRows Int              @default(0)
+  failedRows  Int              @default(0)
+  error       String?
+  createdById String
+  executedAt  DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  rows ImportTaskRow[]
+
+  @@index([tenantId])
+  @@index([formCode])
+  @@index([fileId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ImportTaskRow {
+  id         String              @id @default(uuid())
+  taskId     String
+  rowNumber  Int
+  status     ImportTaskRowStatus @default(PENDING)
+  rawData    Json
+  mappedData Json?
+  errors     Json?
+  recordId   String?
+  createdAt  DateTime            @default(now())
+  updatedAt  DateTime            @updatedAt
+
+  task ImportTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, rowNumber])
+  @@index([taskId])
+  @@index([status])
+  @@index([recordId])
+}

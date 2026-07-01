@@ -15,6 +15,7 @@ import { CreateFileRelationDto } from './dto/create-file-relation.dto';
 import { QueryFileDto } from './dto/query-file.dto';
 import { QueryFileRelationDto } from './dto/query-file-relation.dto';
 import { UploadFileDto } from './dto/upload-file.dto';
+import { readFile } from 'fs/promises';
 
 const DEFAULT_MAX_SIZE = 20 * 1024 * 1024;
 const BLOCKED_EXTENSIONS = new Set([
@@ -44,6 +45,21 @@ export class FileService {
   );
 
   constructor(private readonly prisma: PrismaService) {}
+
+  async readFileBuffer(user: CurrentUser, id: string) {
+    const file = await this.findOne(user, id);
+
+    if (file.status !== FileObjectStatus.ACTIVE) {
+      throw new BadRequestException('文件已删除');
+    }
+
+    const absolutePath = this.resolveStoragePath(file.storageKey);
+
+    return {
+      file,
+      buffer: await readFile(absolutePath),
+    };
+  }
 
   async replaceOwnerRelations(
     user: CurrentUser,
