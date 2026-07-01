@@ -29,6 +29,7 @@ import { ImportTemplateModule } from './import-template/import-template.module';
 import { MasterDataModule } from './master-data/master-data.module';
 import { CustomerModule } from './customer/customer.module';
 import { ProductModule } from './product/product.module';
+import { SupplierModule } from './supplier/supplier.module';
 
 @Module({
   imports: [
@@ -60,6 +61,7 @@ import { ProductModule } from './product/product.module';
     MasterDataModule,
     CustomerModule,
     ProductModule,
+    SupplierModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

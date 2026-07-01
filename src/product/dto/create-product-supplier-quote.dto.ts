@@ -1,40 +1,50 @@
+// src/product/dto/create-product-supplier-quote.dto.ts
+import { Type } from 'class-transformer';
 import {
   IsBoolean,
   IsEnum,
   IsInt,
   IsNumber,
-  IsObject,
   IsOptional,
   IsString,
+  IsUUID,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { ProductSupplierQuoteStatus } from '../../generated/prisma/client';
 
 export class CreateProductSupplierQuoteDto {
   @IsOptional()
-  @IsString()
-  supplierCustomerId?: string;
+  @IsUUID()
+  supplierId?: string;
 
-  @IsOptional()
+  @ValidateIf((dto) => !dto.supplierId)
   @IsString()
   supplierName?: string;
 
   @IsString()
-  currencyCode: string;
+  currency: string;
 
+  @Type(() => Number)
   @IsNumber()
   @Min(0)
-  purchasePrice: number;
+  price: number;
 
   @IsOptional()
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   @Min(0)
   moq?: number;
 
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   @Min(0)
   leadTimeDays?: number;
+
+  @IsOptional()
+  @IsString()
+  remark?: string;
 
   @IsOptional()
   @IsBoolean()
@@ -43,12 +53,4 @@ export class CreateProductSupplierQuoteDto {
   @IsOptional()
   @IsEnum(ProductSupplierQuoteStatus)
   status?: ProductSupplierQuoteStatus;
-
-  @IsOptional()
-  @IsString()
-  remark?: string;
-
-  @IsOptional()
-  @IsObject()
-  extra?: Record<string, unknown>;
 }

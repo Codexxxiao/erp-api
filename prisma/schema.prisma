@@ -1639,6 +1639,7 @@ model ProductSupplierQuote {
   tenantId           String
   productId          String
   supplierCustomerId String?
+  supplierId   String?
   supplierName       String?
   currencyCode       String
   purchasePrice      Decimal                    @db.Decimal(18, 4)
@@ -1652,8 +1653,11 @@ model ProductSupplierQuote {
   updatedById        String?
   createdAt          DateTime                   @default(now())
   updatedAt          DateTime                   @updatedAt
+  
+
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier     Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([productId])
@@ -1661,4 +1665,99 @@ model ProductSupplierQuote {
   @@index([currencyCode])
   @@index([isDefault])
   @@index([status])
+  @@index([tenantId, supplierId])
+}
+
+enum SupplierStatus {
+  ACTIVE
+  INACTIVE
+  BLACKLISTED
+}
+
+enum SupplierType {
+  MANUFACTURER
+  TRADING_COMPANY
+  LOGISTICS
+  SERVICE
+  OTHER
+}
+
+model Supplier {
+  id                 String         @id @default(uuid())
+  tenantId           String
+  code               String
+  name               String
+  shortName           String?
+  type               SupplierType   @default(TRADING_COMPANY)
+  status             SupplierStatus @default(ACTIVE)
+
+  countryRegion      String?
+  province           String?
+  city               String?
+  address            String?
+  website            String?
+  email              String?
+  phone              String?
+
+  source             String?
+  level              String?
+  settlementCurrency String?
+  paymentTerm        String?
+  tradeTerm          String?
+  tags               Json?
+  remark             String?
+
+  createdById        String
+  updatedById        String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  contacts           SupplierContact[]
+  followUps          SupplierFollowUp[]
+  productQuotes      ProductSupplierQuote[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, status])
+  @@index([tenantId, name])
+}
+
+model SupplierContact {
+  id          String   @id @default(uuid())
+  tenantId    String
+  supplierId  String
+  name        String
+  title       String?
+  email       String?
+  phone       String?
+  mobile      String?
+  whatsapp    String?
+  wechat      String?
+  skype       String?
+  isPrimary   Boolean  @default(false)
+  sort        Int      @default(0)
+  remark      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, supplierId])
+  @@index([tenantId, isPrimary])
+}
+
+model SupplierFollowUp {
+  id           String   @id @default(uuid())
+  tenantId     String
+  supplierId   String
+  type         String?
+  content      String
+  nextFollowAt DateTime?
+  createdById  String
+  createdAt    DateTime @default(now())
+
+  supplier     Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, supplierId])
+  @@index([tenantId, createdAt])
 }
