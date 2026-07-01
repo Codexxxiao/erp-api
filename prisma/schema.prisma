@@ -1761,3 +1761,88 @@ model SupplierFollowUp {
   @@index([tenantId, supplierId])
   @@index([tenantId, createdAt])
 }
+
+enum InquiryStatus {
+  DRAFT
+  OPEN
+  QUOTED
+  WON
+  LOST
+  CLOSED
+  CANCELLED
+}
+
+enum InquiryPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model Inquiry {
+  id                   String          @id @default(uuid())
+  tenantId             String
+  inquiryNo            String
+  customerId           String?
+  customerName         String?
+  customerContactId    String?
+  customerContactName  String?
+  subject              String
+  sourceCode           String?
+  priority             InquiryPriority @default(NORMAL)
+  status               InquiryStatus   @default(OPEN)
+  currencyCode         String?
+  tradeTerm            String?
+  paymentTerm          String?
+  expectedDeliveryDate DateTime?
+  validUntil           DateTime?
+  ownerUserId          String?
+  quotedAt             DateTime?
+  closedAt             DateTime?
+  lostReason           String?
+  remark               String?
+  extra                Json?
+  createdById          String
+  updatedById          String?
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  items InquiryItem[]
+
+  @@unique([tenantId, inquiryNo])
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([status])
+  @@index([priority])
+  @@index([sourceCode])
+  @@index([ownerUserId])
+  @@index([createdAt])
+}
+
+model InquiryItem {
+  id                   String   @id @default(uuid())
+  tenantId             String
+  inquiryId            String
+  productId            String?
+  productCode          String?
+  productNameCn        String?
+  productNameEn        String?
+  categoryCode         String?
+  unitCode             String?
+  quantity             Decimal  @db.Decimal(18, 4)
+  targetPrice          Decimal? @db.Decimal(18, 4)
+  currencyCode         String?
+  expectedDeliveryDate DateTime?
+  remark               String?
+  extra                Json?
+  sort                 Int      @default(0)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  inquiry Inquiry @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([inquiryId])
+  @@index([productId])
+  @@index([productCode])
+}
