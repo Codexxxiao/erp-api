@@ -15,6 +15,10 @@ export class ImportFieldMappingDto {
   fieldCode: string;
 
   @IsOptional()
+  @IsString()
+  tableCode?: string;
+
+  @IsOptional()
   defaultValue?: unknown;
 }
 
@@ -24,6 +28,11 @@ export class ValidateImportTaskDto {
   @ValidateNested({ each: true })
   @Type(() => ImportFieldMappingDto)
   mappings?: ImportFieldMappingDto[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  groupBy?: string[];
 
   @IsOptional()
   @IsBoolean()

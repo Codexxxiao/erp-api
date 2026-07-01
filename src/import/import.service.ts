@@ -28,6 +28,14 @@ import {
 } from './dto/validate-import-task.dto';
 import { ImportTemplateService } from '../import-template/import-template.service';
 import type { FormSnapshot } from '../form-snapshot/form-snapshot.types';
+
+type RuntimeTableInfo = {
+  code: string;
+  name: string;
+  type: FormTableType;
+  fields: RuntimeField[];
+};
+
 type RuntimeField = {
   code: string;
   name: string;
@@ -38,8 +46,24 @@ type RuntimeField = {
 type ImportTemplateMappingItem = {
   header?: string;
   aliases?: string[];
+  tableCode?: string;
   fieldCode: string;
   defaultValue?: unknown;
+};
+
+type GroupedMappedData = {
+  mainData: Record<string, unknown>;
+  details: Array<{
+    tableCode: string;
+    rows: Record<string, unknown>[];
+  }>;
+};
+
+type ImportRowValidationResult = {
+  rowNumber: number;
+  rawData: Record<string, unknown>;
+  mappedData: Record<string, unknown> | GroupedMappedData;
+  errors: string[];
 };
 
 @Injectable()
@@ -89,6 +113,72 @@ export class ImportService {
 
     return value as ImportTemplateMappingItem[];
   }
+  private getMainTable(tables: RuntimeTableInfo[]) {
+    const mainTable = tables.find((table) => table.type === FormTableType.MAIN);
+    if (!mainTable) throw new BadRequestException('表单未配置主表');
+    return mainTable;
+  }
+
+  private buildFieldMap(tables: RuntimeTableInfo[]) {
+    const map = new Map<string, RuntimeField>();
+
+    for (const table of tables) {
+      for (const field of table.fields) {
+        map.set(`${table.code}.${field.code}`, field);
+      }
+    }
+
+    return map;
+  }
+
+  private validateRequiredFields(
+    table: RuntimeTableInfo,
+    data: Record<string, unknown>,
+    errors: string[],
+    label: string,
+  ) {
+    for (const field of table.fields) {
+      if (field.required && !this.hasValue(data[field.code])) {
+        errors.push(`${label}字段 ${field.name} 必填`);
+      }
+    }
+  }
+
+  private buildGroupKey(data: Record<string, unknown>, groupBy: string[]) {
+    const values = groupBy.map((fieldCode) => data[fieldCode]);
+
+    if (values.some((value) => !this.hasValue(value))) {
+      return '';
+    }
+
+    return values.map((value) => String(value).trim()).join('||');
+  }
+
+  private isEmptyObject(value: Record<string, unknown>) {
+    return Object.values(value).every((item) => !this.hasValue(item));
+  }
+
+  private async loadTemplateConfig(tenantId: string, templateId: string) {
+    const template = await this.prisma.importTemplate.findFirst({
+      where: {
+        id: templateId,
+        tenantId,
+        isActive: true,
+      },
+      select: {
+        config: true,
+      },
+    });
+
+    return template?.config as { mode?: string; groupBy?: string[] } | null;
+  }
+
+  private getGroupByFromConfig(
+    config: { mode?: string; groupBy?: string[] } | null,
+  ) {
+    if (config?.mode !== 'SINGLE_SHEET_GROUP') return [];
+    return Array.isArray(config.groupBy) ? config.groupBy : [];
+  }
 
   private resolveTemplateMappings(
     templateMapping: ImportTemplateMappingItem[],
@@ -111,6 +201,7 @@ export class ImportService {
       const mapping: ImportFieldMappingDto = {
         header: matchedHeader,
         fieldCode: item.fieldCode,
+        tableCode: item.tableCode ?? 'main',
       };
 
       if (item.defaultValue !== undefined) {
@@ -203,35 +294,35 @@ export class ImportService {
   async validate(user: CurrentUser, id: string, dto: ValidateImportTaskDto) {
     const task = await this.ensureTask(user, id);
     const parsed = await this.parseExcel(user, task);
-    const fields = await this.loadMainFields(task.tenantId, task.formId);
-
-    const fieldMap = new Map(fields.map((field) => [field.code, field]));
+    const tables = await this.loadRuntimeTables(task.tenantId, task.formId);
 
     const mappingSource =
       dto.mappings && dto.mappings.length > 0
         ? dto.mappings
         : await this.resolveTaskTemplateMappings(task, parsed.headers);
 
-    const mapping = this.normalizeMapping(mappingSource, fieldMap);
+    const mapping = this.normalizeMapping(mappingSource, tables);
     const mappedHeaders = new Set(mapping.map((item) => item.header));
 
-    const missingRequired = fields.filter(
-      (field) =>
-        field.required &&
-        !mapping.some((item) => item.fieldCode === field.code),
+    const templateConfig = task.templateId
+      ? await this.loadTemplateConfig(task.tenantId, task.templateId)
+      : null;
+
+    const groupBy =
+      dto.groupBy && dto.groupBy.length > 0
+        ? dto.groupBy
+        : this.getGroupByFromConfig(templateConfig);
+
+    const rawRows = parsed.rows.filter(
+      (row) => !dto.skipEmptyRows || !this.isEmptyRawRow(row, mappedHeaders),
     );
 
-    if (missingRequired.length > 0) {
-      throw new BadRequestException(
-        `缺少必填字段映射：${missingRequired.map((item) => item.name).join(', ')}`,
-      );
-    }
-
-    const rowResults = parsed.rows
-      .filter(
-        (row) => !dto.skipEmptyRows || !this.isEmptyRawRow(row, mappedHeaders),
-      )
-      .map((rawRow) => this.validateRow(rawRow, mapping, fieldMap));
+    const rowResults: ImportRowValidationResult[] =
+      groupBy.length > 0
+        ? this.validateGroupedRows(rawRows, mapping, tables, groupBy)
+        : rawRows.map((rawRow) =>
+            this.validateMainOnlyRow(rawRow, mapping, tables),
+          );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.importTaskRow.deleteMany({ where: { taskId: task.id } });
@@ -269,6 +360,161 @@ export class ImportService {
     return this.findOne(user, id);
   }
 
+  private toRuntimeCreatePayload(
+    task: { formCode: string; formId: string | null },
+    mappedData: unknown,
+  ): GroupedMappedData {
+    const value = mappedData as Partial<GroupedMappedData>;
+
+    if (value.mainData && Array.isArray(value.details)) {
+      return {
+        mainData: value.mainData,
+        details: value.details,
+      };
+    }
+
+    return {
+      mainData: mappedData as Record<string, unknown>,
+      details: [],
+    };
+  }
+
+  private validateGroupedRows(
+    rows: Array<{ rowNumber: number; rawData: Record<string, unknown> }>,
+    mappings: ImportFieldMappingDto[],
+    tables: RuntimeTableInfo[],
+    groupBy: string[],
+  ): ImportRowValidationResult[] {
+    const mainTable = this.getMainTable(tables);
+    const fieldMap = this.buildFieldMap(tables);
+    const groups = new Map<
+      string,
+      {
+        firstRowNumber: number;
+        rawRows: Record<string, unknown>[];
+        rowNumbers: number[];
+        mainData: Record<string, unknown>;
+        detailsMap: Map<string, Record<string, unknown>[]>;
+        errors: string[];
+      }
+    >();
+
+    for (const row of rows) {
+      const rowErrors: string[] = [];
+      const rowMainData: Record<string, unknown> = {};
+      const rowDetailsMap = new Map<string, Record<string, unknown>>();
+
+      for (const mapping of mappings) {
+        const tableCode = mapping.tableCode ?? 'main';
+        const tableKey = tableCode === 'main' ? mainTable.code : tableCode;
+        const fieldKey = `${tableKey}.${mapping.fieldCode}`;
+        const field = fieldMap.get(fieldKey);
+
+        if (!field) {
+          rowErrors.push(`字段不存在：${tableCode}.${mapping.fieldCode}`);
+          continue;
+        }
+
+        const rawValue = row.rawData[mapping.header];
+        const value = this.hasValue(rawValue) ? rawValue : mapping.defaultValue;
+
+        try {
+          const casted = this.castValue(field, value);
+
+          if (tableCode === 'main' || tableCode === mainTable.code) {
+            rowMainData[mapping.fieldCode] = casted;
+          } else {
+            const detailRow = rowDetailsMap.get(tableCode) ?? {};
+            detailRow[mapping.fieldCode] = casted;
+            rowDetailsMap.set(tableCode, detailRow);
+          }
+        } catch (error) {
+          rowErrors.push(
+            error instanceof Error
+              ? `${tableCode}.${field.name}: ${error.message}`
+              : `${tableCode}.${field.name}: 格式错误`,
+          );
+        }
+      }
+
+      const groupKey = this.buildGroupKey(rowMainData, groupBy);
+
+      if (!groupKey) {
+        rowErrors.push(`分组字段不能为空：${groupBy.join(', ')}`);
+      }
+
+      const safeGroupKey = groupKey || `__invalid_row_${row.rowNumber}`;
+
+      const group = groups.get(safeGroupKey) ?? {
+        firstRowNumber: row.rowNumber,
+        rawRows: [],
+        rowNumbers: [],
+        mainData: {},
+        detailsMap: new Map<string, Record<string, unknown>[]>(),
+        errors: [],
+      };
+
+      group.rawRows.push(row.rawData);
+      group.rowNumbers.push(row.rowNumber);
+      group.errors.push(...rowErrors);
+
+      for (const [key, value] of Object.entries(rowMainData)) {
+        if (!this.hasValue(group.mainData[key]) && this.hasValue(value)) {
+          group.mainData[key] = value;
+        }
+      }
+
+      for (const [tableCode, detailRow] of rowDetailsMap.entries()) {
+        if (this.isEmptyObject(detailRow)) continue;
+
+        const list = group.detailsMap.get(tableCode) ?? [];
+        list.push(detailRow);
+        group.detailsMap.set(tableCode, list);
+      }
+
+      groups.set(safeGroupKey, group);
+    }
+
+    return Array.from(groups.values()).map((group) => {
+      const errors = [...group.errors];
+
+      this.validateRequiredFields(mainTable, group.mainData, errors, '主表');
+
+      for (const table of tables.filter(
+        (item) => item.type === FormTableType.SUB,
+      )) {
+        const detailRows = group.detailsMap.get(table.code) ?? [];
+
+        detailRows.forEach((detailRow, index) => {
+          this.validateRequiredFields(
+            table,
+            detailRow,
+            errors,
+            `${table.name}第${index + 1}行`,
+          );
+        });
+      }
+
+      return {
+        rowNumber: group.firstRowNumber,
+        rawData: {
+          rowNumbers: group.rowNumbers,
+          rows: group.rawRows,
+        },
+        mappedData: {
+          mainData: group.mainData,
+          details: Array.from(group.detailsMap.entries()).map(
+            ([tableCode, detailRows]) => ({
+              tableCode,
+              rows: detailRows,
+            }),
+          ),
+        },
+        errors,
+      };
+    });
+  }
+
   async execute(user: CurrentUser, id: string, dto: ExecuteImportTaskDto) {
     const task = await this.ensureTask(user, id);
 
@@ -293,11 +539,15 @@ export class ImportService {
 
     for (const row of rows) {
       try {
+        const mappedData = row.mappedData as unknown;
+
+        const payload = this.toRuntimeCreatePayload(task, mappedData);
+
         const record = await this.runtimeFormService.create(user, {
           formId: task.formId ?? undefined,
           formCode: task.formCode,
-          mainData: row.mappedData as Record<string, unknown>,
-          details: [],
+          mainData: payload.mainData,
+          details: payload.details,
           submit: dto.submit ?? false,
         });
 
@@ -451,15 +701,21 @@ export class ImportService {
     return { sheetName, headers: headers.filter(Boolean), rows };
   }
 
-  private validateRow(
+  private validateMainOnlyRow(
     row: { rowNumber: number; rawData: Record<string, unknown> },
-    mapping: ImportFieldMappingDto[],
-    fieldMap: Map<string, RuntimeField>,
-  ) {
+    mappings: ImportFieldMappingDto[],
+    tables: RuntimeTableInfo[],
+  ): ImportRowValidationResult {
+    const mainTable = this.getMainTable(tables);
+    const fieldMap = new Map(
+      mainTable.fields.map((field) => [field.code, field]),
+    );
     const errors: string[] = [];
     const mappedData: Record<string, unknown> = {};
 
-    for (const item of mapping) {
+    for (const item of mappings.filter(
+      (mapping) => !mapping.tableCode || mapping.tableCode === 'main',
+    )) {
       const field = fieldMap.get(item.fieldCode);
       if (!field) continue;
 
@@ -477,11 +733,7 @@ export class ImportService {
       }
     }
 
-    for (const field of fieldMap.values()) {
-      if (field.required && !this.hasValue(mappedData[field.code])) {
-        errors.push(`${field.name} 必填`);
-      }
-    }
+    this.validateRequiredFields(mainTable, mappedData, errors, '主表');
 
     return {
       rowNumber: row.rowNumber,
@@ -543,32 +795,47 @@ export class ImportService {
 
   private normalizeMapping(
     mappings: ImportFieldMappingDto[],
-    fieldMap: Map<string, RuntimeField>,
+    tables: RuntimeTableInfo[],
   ) {
-    const usedHeaders = new Set<string>();
-    const usedFields = new Set<string>();
+    const tableMap = new Map(tables.map((table) => [table.code, table]));
+    const mainTable = this.getMainTable(tables);
+    const usedTargets = new Set<string>();
 
     for (const item of mappings) {
-      if (!fieldMap.has(item.fieldCode)) {
-        throw new BadRequestException(`字段不存在：${item.fieldCode}`);
+      const tableCode = item.tableCode ?? 'main';
+      const runtimeTable =
+        tableCode === 'main' ? mainTable : tableMap.get(tableCode);
+
+      if (!runtimeTable) {
+        throw new BadRequestException(`表不存在：${tableCode}`);
       }
 
-      if (usedHeaders.has(item.header)) {
-        throw new BadRequestException(`Excel 表头重复映射：${item.header}`);
+      const field = runtimeTable.fields.find(
+        (fieldItem) => fieldItem.code === item.fieldCode,
+      );
+
+      if (!field) {
+        throw new BadRequestException(
+          `字段不存在：${tableCode}.${item.fieldCode}`,
+        );
       }
 
-      if (usedFields.has(item.fieldCode)) {
-        throw new BadRequestException(`目标字段重复映射：${item.fieldCode}`);
+      const targetKey = `${runtimeTable.code}.${item.fieldCode}`;
+
+      if (usedTargets.has(targetKey)) {
+        throw new BadRequestException(`目标字段重复映射：${targetKey}`);
       }
 
-      usedHeaders.add(item.header);
-      usedFields.add(item.fieldCode);
+      usedTargets.add(targetKey);
     }
 
-    return mappings;
+    return mappings.map((item) => ({
+      ...item,
+      tableCode: item.tableCode ?? 'main',
+    }));
   }
 
-  private async loadMainFields(tenantId: string, formId: string | null) {
+  private async loadRuntimeTables(tenantId: string, formId: string | null) {
     const version = await this.prisma.formVersion.findFirst({
       where: {
         tenantId,
@@ -581,17 +848,17 @@ export class ImportService {
     if (!version) throw new BadRequestException('表单尚未发布');
 
     const snapshot = version.snapshot as unknown as FormSnapshot;
-    const mainTable = snapshot.tables.find(
-      (table) => table.type === FormTableType.MAIN,
-    );
 
-    if (!mainTable) throw new BadRequestException('表单未配置主表');
-
-    return mainTable.fields.map((field) => ({
-      code: field.code,
-      name: field.name,
-      type: field.type,
-      required: field.required,
+    return snapshot.tables.map((table) => ({
+      code: table.code,
+      name: table.name,
+      type: table.type,
+      fields: table.fields.map((field) => ({
+        code: field.code,
+        name: field.name,
+        type: field.type,
+        required: field.required,
+      })),
     }));
   }
 
