@@ -26,12 +26,20 @@ import {
   ImportFieldMappingDto,
   ValidateImportTaskDto,
 } from './dto/validate-import-task.dto';
-
+import { ImportTemplateService } from '../import-template/import-template.service';
+import type { FormSnapshot } from '../form-snapshot/form-snapshot.types';
 type RuntimeField = {
   code: string;
   name: string;
   type: FormFieldType;
   required: boolean;
+};
+
+type ImportTemplateMappingItem = {
+  header?: string;
+  aliases?: string[];
+  fieldCode: string;
+  defaultValue?: unknown;
 };
 
 @Injectable()
@@ -40,7 +48,80 @@ export class ImportService {
     private readonly prisma: PrismaService,
     private readonly fileService: FileService,
     private readonly runtimeFormService: RuntimeFormService,
+    private readonly importTemplateService: ImportTemplateService,
   ) {}
+
+  private async resolveTaskTemplateMappings(
+    task: {
+      tenantId: string;
+      formCode: string;
+      templateId: string | null;
+    },
+    headers: string[],
+  ): Promise<ImportFieldMappingDto[]> {
+    const template = task.templateId
+      ? await this.importTemplateService.ensureUsableTemplate(
+          task.tenantId,
+          task.templateId,
+          task.formCode,
+        )
+      : await this.importTemplateService.findDefault(
+          task.tenantId,
+          task.formCode,
+        );
+
+    if (!template) {
+      throw new BadRequestException(
+        '未传 mappings，且当前表单没有可用导入模板',
+      );
+    }
+
+    return this.resolveTemplateMappings(
+      this.parseTemplateMapping(template.mapping),
+      headers,
+    );
+  }
+
+  private parseTemplateMapping(value: unknown): ImportTemplateMappingItem[] {
+    if (!Array.isArray(value)) {
+      throw new BadRequestException('导入模板 mapping 格式无效');
+    }
+
+    return value as ImportTemplateMappingItem[];
+  }
+
+  private resolveTemplateMappings(
+    templateMapping: ImportTemplateMappingItem[],
+    headers: string[],
+  ): ImportFieldMappingDto[] {
+    const headerSet = new Set(headers.map((item) => item.trim()));
+    const result: ImportFieldMappingDto[] = [];
+
+    for (const item of templateMapping) {
+      const candidates = [item.header, ...(item.aliases ?? [])]
+        .filter((value): value is string => Boolean(value))
+        .map((value) => value.trim());
+
+      const matchedHeader = candidates.find((candidate) =>
+        headerSet.has(candidate),
+      );
+
+      if (!matchedHeader) continue;
+
+      const mapping: ImportFieldMappingDto = {
+        header: matchedHeader,
+        fieldCode: item.fieldCode,
+      };
+
+      if (item.defaultValue !== undefined) {
+        mapping.defaultValue = item.defaultValue;
+      }
+
+      result.push(mapping);
+    }
+
+    return result;
+  }
 
   async createTask(user: CurrentUser, dto: CreateImportTaskDto) {
     const tenantId = requireTenantId(user);
@@ -48,10 +129,19 @@ export class ImportService {
 
     const form = await this.ensureForm(tenantId, dto.formId, dto.formCode);
 
+    const template = dto.templateId
+      ? await this.importTemplateService.ensureUsableTemplate(
+          tenantId,
+          dto.templateId,
+          form.code,
+        )
+      : await this.importTemplateService.findDefault(tenantId, form.code);
+
     return this.prisma.importTask.create({
       data: {
         tenantId,
         fileId: dto.fileId,
+        templateId: template?.id,
         formId: form.id,
         formCode: form.code,
         sheetName: dto.sheetName,
@@ -68,10 +158,36 @@ export class ImportService {
 
     const previewRows = parsed.rows.slice(0, dto.limit ?? 20);
 
+    const template = task.templateId
+      ? await this.importTemplateService.ensureUsableTemplate(
+          task.tenantId,
+          task.templateId,
+          task.formCode,
+        )
+      : await this.importTemplateService.findDefault(
+          task.tenantId,
+          task.formCode,
+        );
+
+    const suggestedMappings = template
+      ? this.resolveTemplateMappings(
+          this.parseTemplateMapping(template.mapping),
+          parsed.headers,
+        )
+      : [];
+
     const preview = {
       sheetName: parsed.sheetName,
       headers: parsed.headers,
       previewRows,
+      template: template
+        ? {
+            id: template.id,
+            code: template.code,
+            name: template.name,
+          }
+        : null,
+      suggestedMappings,
     };
 
     return this.prisma.importTask.update({
@@ -90,7 +206,13 @@ export class ImportService {
     const fields = await this.loadMainFields(task.tenantId, task.formId);
 
     const fieldMap = new Map(fields.map((field) => [field.code, field]));
-    const mapping = this.normalizeMapping(dto.mappings, fieldMap);
+
+    const mappingSource =
+      dto.mappings && dto.mappings.length > 0
+        ? dto.mappings
+        : await this.resolveTaskTemplateMappings(task, parsed.headers);
+
+    const mapping = this.normalizeMapping(mappingSource, fieldMap);
     const mappedHeaders = new Set(mapping.map((item) => item.header));
 
     const missingRequired = fields.filter(
@@ -134,7 +256,7 @@ export class ImportService {
         where: { id: task.id },
         data: {
           status: ImportTaskStatus.VALIDATED,
-          mapping: this.toJson(dto.mappings),
+          mapping: this.toJson(mapping),
           totalRows: rowResults.length,
           failedRows: rowResults.filter((item) => item.errors.length > 0)
             .length,
@@ -256,7 +378,15 @@ export class ImportService {
     });
 
     if (!item) throw new NotFoundException('导入任务不存在');
-    return item;
+
+    const template = item.templateId
+      ? await this.prisma.importTemplate.findFirst({
+          where: { id: item.templateId, tenantId },
+          select: { id: true, code: true, name: true, isActive: true },
+        })
+      : null;
+
+    return { ...item, template };
   }
 
   async findRows(user: CurrentUser, id: string) {
@@ -302,7 +432,7 @@ export class ImportService {
     const dataStartIndex = task.dataStartRow - 1;
     const headerRow = matrix[headerIndex] ?? [];
 
-    const headers = headerRow.map((item) => String(item ?? '').trim());
+    const headers = headerRow.map((item) => this.cellToHeaderText(item).trim());
 
     const rows = matrix.slice(dataStartIndex).map((line, index) => {
       const rawData: Record<string, unknown> = {};
@@ -450,19 +580,19 @@ export class ImportService {
 
     if (!version) throw new BadRequestException('表单尚未发布');
 
-    const snapshot = version.snapshot as any;
-    const mainTable = snapshot.tables?.find(
-      (table: any) => table.type === FormTableType.MAIN,
+    const snapshot = version.snapshot as unknown as FormSnapshot;
+    const mainTable = snapshot.tables.find(
+      (table) => table.type === FormTableType.MAIN,
     );
 
     if (!mainTable) throw new BadRequestException('表单未配置主表');
 
-    return (mainTable.fields ?? []).map((field: any) => ({
+    return mainTable.fields.map((field) => ({
       code: field.code,
       name: field.name,
       type: field.type,
       required: field.required,
-    })) as RuntimeField[];
+    }));
   }
 
   private async ensureForm(
@@ -500,6 +630,20 @@ export class ImportService {
     return Array.from(headers).every(
       (header) => !this.hasValue(row.rawData[header]),
     );
+  }
+
+  private cellToHeaderText(value: unknown): string {
+    if (value === undefined || value === null) return '';
+
+    if (
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'boolean'
+    ) {
+      return String(value);
+    }
+
+    return '';
   }
 
   private hasValue(value: unknown) {

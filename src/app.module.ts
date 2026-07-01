@@ -25,6 +25,7 @@ import { PackageInstallModule } from './package-install/package-install.module';
 import { PackageUpgradeModule } from './package-upgrade/package-upgrade.module';
 import { FileModule } from './file/file.module';
 import { ImportModule } from './import/import.module';
+import { ImportTemplateModule } from './import-template/import-template.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { ImportModule } from './import/import.module';
     PackageUpgradeModule,
     FileModule,
     ImportModule,
+    ImportTemplateModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

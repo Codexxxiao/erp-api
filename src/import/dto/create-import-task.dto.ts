@@ -27,4 +27,8 @@ export class CreateImportTaskDto {
   @IsInt()
   @Min(1)
   dataStartRow?: number = 2;
+
+  @IsOptional()
+  @IsString()
+  templateId?: string;
 }

@@ -1417,6 +1417,7 @@ model ImportTask {
   formId      String?
   formCode    String
   fileId      String
+  templateId String?
   sheetName   String?
   headerRow   Int              @default(1)
   dataStartRow Int             @default(2)
@@ -1439,6 +1440,7 @@ model ImportTask {
   @@index([fileId])
   @@index([status])
   @@index([createdAt])
+  @@index([templateId])
 }
 
 model ImportTaskRow {
@@ -1459,4 +1461,29 @@ model ImportTaskRow {
   @@index([taskId])
   @@index([status])
   @@index([recordId])
+}
+
+model ImportTemplate {
+  id          String   @id @default(uuid())
+  tenantId    String
+  formId      String?
+  formCode    String
+  code        String
+  name        String
+  description String?
+  mapping     Json
+  config      Json?
+  isDefault   Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdById String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([formCode])
+  @@index([formId])
+  @@index([isDefault])
+  @@index([isActive])
 }

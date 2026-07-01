@@ -2,7 +2,6 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsBoolean,
-  IsObject,
   IsOptional,
   IsString,
   ValidateNested,
@@ -16,15 +15,15 @@ export class ImportFieldMappingDto {
   fieldCode: string;
 
   @IsOptional()
-  @IsObject()
   defaultValue?: unknown;
 }
 
 export class ValidateImportTaskDto {
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ImportFieldMappingDto)
-  mappings: ImportFieldMappingDto[];
+  mappings?: ImportFieldMappingDto[];
 
   @IsOptional()
   @IsBoolean()
