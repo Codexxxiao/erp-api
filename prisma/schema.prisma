@@ -1586,3 +1586,79 @@ model CustomerFollowUp {
   @@index([followedAt])
   @@index([nextFollowAt])
 }
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+  DISCONTINUED
+}
+
+enum ProductSupplierQuoteStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Product {
+  id                        String        @id @default(uuid())
+  tenantId                  String
+  code                      String
+  sku                       String?
+  nameCn                    String
+  nameEn                    String?
+  categoryCode              String?
+  unitCode                  String?
+  currencyCode              String?
+  costPrice                 Decimal?      @db.Decimal(18, 4)
+  salePrice                 Decimal?      @db.Decimal(18, 4)
+  defaultSupplierCustomerId String?
+  mainImageFileId           String?
+  status                    ProductStatus @default(ACTIVE)
+  description               String?
+  remark                    String?
+  extra                     Json?
+  createdById               String
+  updatedById               String?
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+
+  supplierQuotes ProductSupplierQuote[]
+
+  @@unique([tenantId, code])
+  @@unique([tenantId, sku])
+  @@index([tenantId])
+  @@index([categoryCode])
+  @@index([unitCode])
+  @@index([currencyCode])
+  @@index([status])
+  @@index([defaultSupplierCustomerId])
+  @@index([createdAt])
+}
+
+model ProductSupplierQuote {
+  id                 String                     @id @default(uuid())
+  tenantId           String
+  productId          String
+  supplierCustomerId String?
+  supplierName       String?
+  currencyCode       String
+  purchasePrice      Decimal                    @db.Decimal(18, 4)
+  moq                Decimal?                   @db.Decimal(18, 4)
+  leadTimeDays       Int?
+  isDefault          Boolean                    @default(false)
+  status             ProductSupplierQuoteStatus @default(ACTIVE)
+  remark             String?
+  extra              Json?
+  createdById        String
+  updatedById        String?
+  createdAt          DateTime                   @default(now())
+  updatedAt          DateTime                   @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([productId])
+  @@index([supplierCustomerId])
+  @@index([currencyCode])
+  @@index([isDefault])
+  @@index([status])
+}

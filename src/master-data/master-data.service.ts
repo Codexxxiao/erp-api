@@ -111,6 +111,39 @@ const PRESETS: PresetDictionary[] = [
       { value: 'OTHER', label: '其他', sort: 99 },
     ],
   },
+  {
+    code: 'product_category',
+    name: '产品分类',
+    items: [
+      { value: 'GENERAL', label: '通用产品', sort: 10 },
+      { value: 'TEXTILE', label: '纺织服装', sort: 20 },
+      { value: 'ELECTRONICS', label: '电子产品', sort: 30 },
+      { value: 'HARDWARE', label: '五金工具', sort: 40 },
+      { value: 'OTHER', label: '其他', sort: 99 },
+    ],
+  },
+  {
+    code: 'product_unit',
+    name: '产品单位',
+    items: [
+      { value: 'PCS', label: 'PCS', sort: 10 },
+      { value: 'SET', label: 'SET', sort: 20 },
+      { value: 'KG', label: 'KG', sort: 30 },
+      { value: 'M', label: 'M', sort: 40 },
+      { value: 'CBM', label: 'CBM', sort: 50 },
+      { value: 'CTN', label: 'CTN', sort: 60 },
+    ],
+  },
+  {
+    code: 'product_source',
+    name: '产品来源',
+    items: [
+      { value: 'SELF_DEVELOPED', label: '自主开发', sort: 10 },
+      { value: 'SUPPLIER', label: '供应商提供', sort: 20 },
+      { value: 'CUSTOMER_SAMPLE', label: '客户来样', sort: 30 },
+      { value: 'OTHER', label: '其他', sort: 99 },
+    ],
+  },
 ];
 
 @Injectable()
