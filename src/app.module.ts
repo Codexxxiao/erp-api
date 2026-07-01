@@ -38,6 +38,7 @@ import { PurchaseRequirementModule } from './purchase-requirement/purchase-requi
 import { PurchaseOrderModule } from './purchase-order/purchase-order.module';
 import { InboundReceiptModule } from './inbound-receipt/inbound-receipt.module';
 import { InventoryModule } from './inventory/inventory.module';
+import { OutboundShipmentModule } from './outbound-shipment/outbound-shipment.module';
 
 @Module({
   imports: [
@@ -78,6 +79,7 @@ import { InventoryModule } from './inventory/inventory.module';
     PurchaseOrderModule,
     InboundReceiptModule,
     InventoryModule,
+    OutboundShipmentModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

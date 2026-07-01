@@ -468,6 +468,61 @@ export class InventoryService {
       });
     });
   }
+  async postOutboundShipment(
+    params: {
+      tenantId: string;
+      userId: string;
+      shipmentId: string;
+      shipmentNo?: string | null;
+      shipmentDate?: Date | null;
+      items: Array<{
+        shipmentItemId: string;
+        productId?: string | null;
+        productCode?: string | null;
+        productNameCn?: string | null;
+        productNameEn?: string | null;
+        categoryCode?: string | null;
+        unitCode?: string | null;
+        warehouseCode?: string | null;
+        locationCode?: string | null;
+        batchNo?: string | null;
+        quantity: number;
+        unitCost?: number;
+        amount?: number;
+        currencyCode?: string | null;
+      }>;
+    },
+    tx?: Prisma.TransactionClient,
+  ) {
+    const runner = async (client: Prisma.TransactionClient) => {
+      for (const item of params.items.filter((row) => row.quantity > 0)) {
+        await this.applyMovementTx(client, params.tenantId, params.userId, {
+          type: InventoryTransactionType.OUTBOUND_SHIPMENT,
+          direction: InventoryDirection.OUT,
+          sourceType: 'outbound_shipment',
+          sourceId: params.shipmentId,
+          sourceItemId: item.shipmentItemId,
+          productId: item.productId,
+          productCode: item.productCode,
+          productNameCn: item.productNameCn,
+          productNameEn: item.productNameEn,
+          categoryCode: item.categoryCode,
+          unitCode: item.unitCode,
+          warehouseCode: item.warehouseCode,
+          locationCode: item.locationCode,
+          batchNo: item.batchNo,
+          quantity: item.quantity,
+          unitCost: item.unitCost,
+          amount: item.amount,
+          currencyCode: item.currencyCode,
+          occurredAt: params.shipmentDate ?? new Date(),
+          remark: `销售出运出库 ${params.shipmentNo ?? ''}`.trim(),
+        });
+      }
+    };
+
+    return tx ? runner(tx) : this.prisma.$transaction(runner);
+  }
 
   async postInboundReceipt(
     params: {

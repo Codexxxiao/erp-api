@@ -2423,12 +2423,6 @@ enum InventoryDirection {
   OUT
 }
 
-enum InventoryTransactionType {
-  INBOUND_RECEIPT
-  ADJUSTMENT_IN
-  ADJUSTMENT_OUT
-  REVERSAL
-}
 
 enum InventoryAdjustmentType {
   INCREASE
@@ -2592,4 +2586,107 @@ model InventoryAdjustmentItem {
   @@index([productId])
   @@index([productCode])
   @@index([warehouseCode])
+}
+
+enum InventoryTransactionType {
+  INBOUND_RECEIPT
+  OUTBOUND_SHIPMENT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  REVERSAL
+}
+
+enum OutboundShipmentStatus {
+  DRAFT
+  CONFIRMED
+  SHIPPED
+  CANCELLED
+}
+
+enum OutboundShipmentItemStatus {
+  NORMAL
+  CANCELLED
+}
+
+model OutboundShipment {
+  id                   String                 @id @default(uuid())
+  tenantId             String
+  shipmentNo           String
+  salesOrderId         String
+  salesOrderNo         String?
+  customerId           String?
+  customerName         String?
+  status               OutboundShipmentStatus @default(DRAFT)
+  shipmentDate         DateTime?
+  warehouseCode        String?
+  transportMode        String?
+  carrierName          String?
+  trackingNo           String?
+  bookingNo            String?
+  containerNo          String?
+  blNo                 String?
+  etd                  DateTime?
+  eta                  DateTime?
+  destinationPort      String?
+  shippingAddress      String?
+  consigneeName        String?
+  ownerUserId          String?
+  confirmedAt          DateTime?
+  shippedAt            DateTime?
+  cancelledAt          DateTime?
+  totalShippedQuantity Decimal                @default(0) @db.Decimal(18, 4)
+  totalAmount          Decimal                @default(0) @db.Decimal(18, 4)
+  remark               String?
+  extra                Json?
+  createdById          String
+  updatedById          String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+
+  items OutboundShipmentItem[]
+
+  @@unique([tenantId, shipmentNo])
+  @@index([tenantId])
+  @@index([salesOrderId])
+  @@index([customerId])
+  @@index([status])
+  @@index([warehouseCode])
+  @@index([shipmentDate])
+  @@index([createdAt])
+}
+
+model OutboundShipmentItem {
+  id                String                     @id @default(uuid())
+  tenantId          String
+  shipmentId        String
+  salesOrderItemId  String
+  productId         String?
+  productCode       String?
+  productNameCn     String?
+  productNameEn     String?
+  categoryCode      String?
+  unitCode          String?
+  warehouseCode     String
+  locationCode      String                     @default("")
+  batchNo           String                     @default("")
+  shippedQuantity   Decimal                    @db.Decimal(18, 4)
+  unitPrice         Decimal?                   @db.Decimal(18, 4)
+  amount            Decimal                    @default(0) @db.Decimal(18, 4)
+  currencyCode      String?
+  status            OutboundShipmentItemStatus @default(NORMAL)
+  remark            String?
+  extra             Json?
+  sort              Int                        @default(0)
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  shipment OutboundShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([shipmentId])
+  @@index([salesOrderItemId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([warehouseCode])
+  @@index([status])
 }
