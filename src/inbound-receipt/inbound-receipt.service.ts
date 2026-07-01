@@ -21,12 +21,14 @@ import { QueryInboundReceiptDto } from './dto/query-inbound-receipt.dto';
 import { ReplaceInboundReceiptItemsDto } from './dto/replace-inbound-receipt-items.dto';
 import { CreateInboundReceiptFromPoDto } from './dto/create-inbound-receipt-from-po.dto';
 import { InboundReceiptItemInputDto } from './dto/inbound-receipt-item-input.dto';
+import { InventoryService } from '../inventory/inventory.service';
 
 @Injectable()
 export class InboundReceiptService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly fileService: FileService,
+    private readonly inventoryService: InventoryService,
   ) {}
 
   async create(user: CurrentUser, dto: CreateInboundReceiptDto) {
@@ -535,6 +537,39 @@ export class InboundReceiptService {
       });
     }
 
+    const receipt = await tx.inboundReceipt.findFirst({
+      where: { id: receiptId, tenantId },
+    });
+
+    if (!receipt) throw new NotFoundException('收货单不存在');
+
+    await this.inventoryService.postInboundReceipt(
+      {
+        tenantId,
+        userId,
+        receiptId,
+        receiptNo: receipt.receiptNo,
+        receiptDate: receipt.receiptDate,
+        items: items.map((item) => ({
+          receiptItemId: item.id,
+          productId: item.productId,
+          productCode: item.productCode,
+          productNameCn: item.productNameCn,
+          productNameEn: item.productNameEn,
+          categoryCode: item.categoryCode,
+          unitCode: item.unitCode,
+          warehouseCode: item.warehouseCode ?? receipt.warehouseCode,
+          locationCode: item.locationCode,
+          batchNo: item.batchNo,
+          quantity: this.toNumber(item.qualifiedQuantity),
+          unitCost: this.optionalNumber(item.unitPrice),
+          amount: this.optionalNumber(item.amount),
+          currencyCode: item.currencyCode,
+        })),
+      },
+      tx,
+    );
+
     if (purchaseOrderId) {
       await this.recalculatePurchaseOrderStatusTx(
         tx,
@@ -551,6 +586,16 @@ export class InboundReceiptService {
     receiptId: string,
     userId: string,
   ) {
+    await this.inventoryService.reverseSource(
+      {
+        tenantId,
+        userId,
+        sourceType: 'inbound_receipt',
+        sourceId: receiptId,
+      },
+      tx,
+    );
+
     const items = await tx.inboundReceiptItem.findMany({
       where: { tenantId, receiptId, status: InboundReceiptItemStatus.NORMAL },
     });

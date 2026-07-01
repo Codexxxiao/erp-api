@@ -2412,3 +2412,184 @@ model InboundReceiptItem {
   @@index([productCode])
   @@index([status])
 }
+
+enum WarehouseStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum InventoryDirection {
+  IN
+  OUT
+}
+
+enum InventoryTransactionType {
+  INBOUND_RECEIPT
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  REVERSAL
+}
+
+enum InventoryAdjustmentType {
+  INCREASE
+  DECREASE
+}
+
+enum InventoryAdjustmentStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+model Warehouse {
+  id          String          @id @default(uuid())
+  tenantId    String
+  code        String
+  name        String
+  status      WarehouseStatus @default(ACTIVE)
+  address     String?
+  contactName String?
+  phone       String?
+  remark      String?
+  extra       Json?
+  createdById String
+  updatedById String?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([status])
+}
+
+model InventoryBalance {
+  id                String   @id @default(uuid())
+  tenantId          String
+  stockKey          String
+  productId         String?
+  productCode       String
+  productNameCn     String?
+  productNameEn     String?
+  categoryCode      String?
+  unitCode          String?
+  warehouseCode     String
+  locationCode      String   @default("")
+  batchNo           String   @default("")
+  quantity          Decimal  @default(0) @db.Decimal(18, 4)
+  lockedQuantity    Decimal  @default(0) @db.Decimal(18, 4)
+  availableQuantity Decimal  @default(0) @db.Decimal(18, 4)
+  lastTransactionAt DateTime?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([tenantId, stockKey])
+  @@index([tenantId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([warehouseCode])
+  @@index([locationCode])
+  @@index([batchNo])
+}
+
+model InventoryTransaction {
+  id              String                   @id @default(uuid())
+  tenantId        String
+  transactionNo   String
+  type            InventoryTransactionType
+  direction       InventoryDirection
+  sourceType      String
+  sourceId        String
+  sourceItemId    String?
+  reversalOfId    String?
+  reversedAt      DateTime?
+  reversedById    String?
+  stockKey        String
+  productId       String?
+  productCode     String
+  productNameCn   String?
+  productNameEn   String?
+  categoryCode    String?
+  unitCode        String?
+  warehouseCode   String
+  locationCode    String                   @default("")
+  batchNo         String                   @default("")
+  quantity        Decimal                  @db.Decimal(18, 4)
+  balanceQuantity Decimal                  @db.Decimal(18, 4)
+  unitCost        Decimal?                 @db.Decimal(18, 4)
+  amount          Decimal?                 @db.Decimal(18, 4)
+  currencyCode    String?
+  occurredAt      DateTime                 @default(now())
+  remark          String?
+  extra           Json?
+  createdById     String
+  createdAt       DateTime                 @default(now())
+
+  @@unique([tenantId, transactionNo])
+  @@index([tenantId])
+  @@index([sourceType, sourceId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([warehouseCode])
+  @@index([stockKey])
+  @@index([occurredAt])
+}
+
+model InventoryAdjustment {
+  id             String                    @id @default(uuid())
+  tenantId       String
+  adjustmentNo   String
+  type           InventoryAdjustmentType
+  status         InventoryAdjustmentStatus @default(DRAFT)
+  warehouseCode  String?
+  reasonCode     String?
+  adjustedAt     DateTime?
+  confirmedAt    DateTime?
+  cancelledAt    DateTime?
+  totalQuantity  Decimal                   @default(0) @db.Decimal(18, 4)
+  remark         String?
+  extra          Json?
+  createdById    String
+  updatedById    String?
+  createdAt      DateTime                  @default(now())
+  updatedAt      DateTime                  @updatedAt
+
+  items InventoryAdjustmentItem[]
+
+  @@unique([tenantId, adjustmentNo])
+  @@index([tenantId])
+  @@index([status])
+  @@index([warehouseCode])
+  @@index([createdAt])
+}
+
+model InventoryAdjustmentItem {
+  id             String   @id @default(uuid())
+  tenantId       String
+  adjustmentId   String
+  productId      String?
+  productCode    String
+  productNameCn  String?
+  productNameEn  String?
+  categoryCode   String?
+  unitCode       String?
+  warehouseCode  String
+  locationCode   String   @default("")
+  batchNo        String   @default("")
+  quantity       Decimal  @db.Decimal(18, 4)
+  unitCost       Decimal? @db.Decimal(18, 4)
+  amount         Decimal? @db.Decimal(18, 4)
+  currencyCode   String?
+  remark         String?
+  extra          Json?
+  sort           Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  adjustment InventoryAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([adjustmentId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([warehouseCode])
+}
