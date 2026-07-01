@@ -111,6 +111,21 @@ export class ProductService {
           supplierQuotes: {
             where: { isDefault: true },
             take: 1,
+            include: {
+              supplier: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  shortName: true,
+                  type: true,
+                  status: true,
+                  countryRegion: true,
+                  settlementCurrency: true,
+                  paymentTerm: true,
+                },
+              },
+            },
           },
           _count: {
             select: { supplierQuotes: true },
@@ -130,6 +145,24 @@ export class ProductService {
       include: {
         supplierQuotes: {
           orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+          include: {
+            supplier: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                shortName: true,
+                type: true,
+                status: true,
+                countryRegion: true,
+                settlementCurrency: true,
+                paymentTerm: true,
+                tradeTerm: true,
+                phone: true,
+                email: true,
+              },
+            },
+          },
         },
       },
     });
@@ -224,6 +257,16 @@ export class ProductService {
 
       if (!quote) throw new NotFoundException('供应商报价不存在');
 
+      const supplierPatch =
+        dto.supplierId !== undefined || dto.supplierName !== undefined
+          ? await this.resolveQuoteSupplierTx(
+              tx,
+              tenantId,
+              dto.supplierId,
+              dto.supplierName,
+            )
+          : undefined;
+
       if (dto.isDefault) {
         await tx.productSupplierQuote.updateMany({
           where: { tenantId, productId, id: { not: quoteId } },
@@ -234,25 +277,25 @@ export class ProductService {
       const updated = await tx.productSupplierQuote.update({
         where: { id: quoteId },
         data: {
-          supplierCustomerId: dto.supplierCustomerId,
-          supplierName: dto.supplierName,
-          currencyCode: dto.currencyCode,
-          purchasePrice: dto.purchasePrice,
+          supplierId: supplierPatch?.supplierId,
+          supplierName: supplierPatch?.supplierName,
+          currencyCode: dto.currency,
+          purchasePrice: dto.price,
           moq: dto.moq,
           leadTimeDays: dto.leadTimeDays,
           isDefault: dto.isDefault,
           status: dto.status,
           remark: dto.remark,
-          extra: dto.extra ? this.toJson(dto.extra) : undefined,
           updatedById: user.id,
         },
       });
 
-      if (updated.isDefault && updated.supplierCustomerId) {
+      if (updated.isDefault) {
         await tx.product.update({
           where: { id: productId },
           data: {
-            defaultSupplierCustomerId: updated.supplierCustomerId,
+            defaultSupplierCustomerId:
+              updated.supplierId ?? updated.supplierCustomerId,
             costPrice: updated.purchasePrice,
             currencyCode: updated.currencyCode,
             updatedById: user.id,
@@ -307,7 +350,8 @@ export class ProductService {
       await tx.product.update({
         where: { id: productId },
         data: {
-          defaultSupplierCustomerId: updated.supplierCustomerId,
+          defaultSupplierCustomerId:
+            updated.supplierId ?? updated.supplierCustomerId,
           costPrice: updated.purchasePrice,
           currencyCode: updated.currencyCode,
           updatedById: user.id,
@@ -325,6 +369,13 @@ export class ProductService {
     userId: string,
     dto: CreateProductSupplierQuoteDto,
   ) {
+    const supplier = await this.resolveQuoteSupplierTx(
+      tx,
+      tenantId,
+      dto.supplierId,
+      dto.supplierName,
+    );
+
     if (dto.isDefault) {
       await tx.productSupplierQuote.updateMany({
         where: { tenantId, productId },
@@ -336,16 +387,15 @@ export class ProductService {
       data: {
         tenantId,
         productId,
-        supplierCustomerId: dto.supplierCustomerId,
-        supplierName: dto.supplierName,
-        currencyCode: dto.currencyCode,
-        purchasePrice: dto.purchasePrice,
+        supplierId: supplier.supplierId,
+        supplierName: supplier.supplierName,
+        currencyCode: dto.currency,
+        purchasePrice: dto.price,
         moq: dto.moq,
         leadTimeDays: dto.leadTimeDays,
         isDefault: dto.isDefault ?? false,
         status: dto.status ?? ProductSupplierQuoteStatus.ACTIVE,
         remark: dto.remark,
-        extra: this.toJson(dto.extra),
         createdById: userId,
       },
     });
@@ -354,7 +404,8 @@ export class ProductService {
       await tx.product.update({
         where: { id: productId },
         data: {
-          defaultSupplierCustomerId: created.supplierCustomerId,
+          defaultSupplierCustomerId:
+            created.supplierId ?? created.supplierCustomerId,
           costPrice: created.purchasePrice,
           currencyCode: created.currencyCode,
           updatedById: userId,
@@ -363,6 +414,40 @@ export class ProductService {
     }
 
     return created;
+  }
+
+  private async resolveQuoteSupplierTx(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    supplierId?: string,
+    supplierName?: string,
+  ) {
+    if (supplierId) {
+      const supplier = await tx.supplier.findFirst({
+        where: { id: supplierId, tenantId },
+        select: { id: true, name: true },
+      });
+
+      if (!supplier) {
+        throw new BadRequestException('供应商不存在');
+      }
+
+      return {
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+      };
+    }
+
+    const normalizedSupplierName = supplierName?.trim();
+
+    if (!normalizedSupplierName) {
+      throw new BadRequestException('supplierId 或 supplierName 必填');
+    }
+
+    return {
+      supplierId: null,
+      supplierName: normalizedSupplierName,
+    };
   }
 
   private async syncFiles(
