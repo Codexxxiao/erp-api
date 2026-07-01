@@ -1487,3 +1487,102 @@ model ImportTemplate {
   @@index([isDefault])
   @@index([isActive])
 }
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  BLACKLIST
+}
+
+enum CustomerType {
+  COMPANY
+  INDIVIDUAL
+}
+
+model Customer {
+  id          String         @id @default(uuid())
+  tenantId    String
+  code        String
+  name        String
+  shortName   String?
+  type        CustomerType   @default(COMPANY)
+  status      CustomerStatus @default(ACTIVE)
+  levelCode   String?
+  sourceCode  String?
+  countryCode String?
+  region      String?
+  address     String?
+  website     String?
+  email       String?
+  phone       String?
+  taxNo       String?
+  ownerUserId String?
+  remark      String?
+  extra       Json?
+  createdById String
+  updatedById String?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  contacts  CustomerContact[]
+  followUps CustomerFollowUp[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([name])
+  @@index([status])
+  @@index([levelCode])
+  @@index([sourceCode])
+  @@index([countryCode])
+  @@index([ownerUserId])
+  @@index([createdAt])
+}
+
+model CustomerContact {
+  id          String   @id @default(uuid())
+  tenantId    String
+  customerId  String
+  name        String
+  title       String?
+  email       String?
+  phone       String?
+  mobile      String?
+  whatsapp    String?
+  wechat      String?
+  isPrimary   Boolean  @default(false)
+  remark      String?
+  extra       Json?
+  createdById String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([isPrimary])
+}
+
+model CustomerFollowUp {
+  id          String   @id @default(uuid())
+  tenantId    String
+  customerId  String
+  typeCode    String
+  content     String
+  followedAt  DateTime @default(now())
+  nextFollowAt DateTime?
+  extra       Json?
+  createdById String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([customerId])
+  @@index([typeCode])
+  @@index([followedAt])
+  @@index([nextFollowAt])
+}
