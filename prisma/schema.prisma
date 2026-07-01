@@ -2328,3 +2328,87 @@ model PurchaseOrderItem {
   @@index([productCode])
   @@index([status])
 }
+
+enum InboundReceiptStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum InboundReceiptItemStatus {
+  NORMAL
+  CANCELLED
+}
+
+model InboundReceipt {
+  id                     String               @id @default(uuid())
+  tenantId               String
+  receiptNo              String
+  purchaseOrderId         String
+  purchaseOrderNo         String?
+  supplierId             String?
+  supplierName           String?
+  status                 InboundReceiptStatus @default(DRAFT)
+  receiptDate            DateTime?
+  warehouseCode          String?
+  ownerUserId            String?
+  confirmedAt            DateTime?
+  cancelledAt            DateTime?
+  totalReceivedQuantity  Decimal              @default(0) @db.Decimal(18, 4)
+  totalQualifiedQuantity Decimal              @default(0) @db.Decimal(18, 4)
+  totalRejectedQuantity  Decimal              @default(0) @db.Decimal(18, 4)
+  totalAmount            Decimal              @default(0) @db.Decimal(18, 4)
+  remark                 String?
+  extra                  Json?
+  createdById            String
+  updatedById            String?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @updatedAt
+
+  items InboundReceiptItem[]
+
+  @@unique([tenantId, receiptNo])
+  @@index([tenantId])
+  @@index([purchaseOrderId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([receiptDate])
+  @@index([createdAt])
+}
+
+model InboundReceiptItem {
+  id                  String                   @id @default(uuid())
+  tenantId            String
+  receiptId           String
+  purchaseOrderItemId String
+  productId           String?
+  productCode         String?
+  productNameCn       String?
+  productNameEn       String?
+  categoryCode        String?
+  unitCode            String?
+  receivedQuantity    Decimal                  @db.Decimal(18, 4)
+  qualifiedQuantity   Decimal                  @default(0) @db.Decimal(18, 4)
+  rejectedQuantity    Decimal                  @default(0) @db.Decimal(18, 4)
+  unitPrice           Decimal?                 @db.Decimal(18, 4)
+  amount              Decimal                  @default(0) @db.Decimal(18, 4)
+  currencyCode        String?
+  batchNo             String?
+  warehouseCode       String?
+  locationCode        String?
+  status              InboundReceiptItemStatus @default(NORMAL)
+  remark              String?
+  extra               Json?
+  sort                Int                      @default(0)
+  createdAt           DateTime                 @default(now())
+  updatedAt           DateTime                 @updatedAt
+
+  receipt InboundReceipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([receiptId])
+  @@index([purchaseOrderItemId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([status])
+}
