@@ -2226,3 +2226,105 @@ model PurchaseRequirementItem {
   @@index([suggestedSupplierId])
   @@index([status])
 }
+
+enum PurchaseOrderSourceType {
+  MANUAL
+  PURCHASE_REQUIREMENT
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  CONFIRMED
+  SENT
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+enum PurchaseOrderItemStatus {
+  OPEN
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id                   String                  @id @default(uuid())
+  tenantId             String
+  purchaseOrderNo      String
+  sourceType           PurchaseOrderSourceType @default(MANUAL)
+  supplierId           String?
+  supplierName         String?
+  status               PurchaseOrderStatus     @default(DRAFT)
+  currencyCode         String
+  exchangeRate         Decimal?                @db.Decimal(18, 6)
+  expectedDeliveryDate DateTime?
+  ownerUserId          String?
+  confirmedAt          DateTime?
+  sentAt               DateTime?
+  receivedAt           DateTime?
+  closedAt             DateTime?
+  cancelledAt          DateTime?
+  subtotalAmount       Decimal                 @default(0) @db.Decimal(18, 4)
+  discountAmount       Decimal                 @default(0) @db.Decimal(18, 4)
+  taxAmount            Decimal                 @default(0) @db.Decimal(18, 4)
+  freightAmount        Decimal                 @default(0) @db.Decimal(18, 4)
+  otherAmount          Decimal                 @default(0) @db.Decimal(18, 4)
+  totalAmount          Decimal                 @default(0) @db.Decimal(18, 4)
+  remark               String?
+  extra                Json?
+  createdById          String
+  updatedById          String?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+
+  items PurchaseOrderItem[]
+
+  @@unique([tenantId, purchaseOrderNo])
+  @@index([tenantId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([ownerUserId])
+  @@index([createdAt])
+}
+
+model PurchaseOrderItem {
+  id                       String                  @id @default(uuid())
+  tenantId                 String
+  purchaseOrderId           String
+  sourceRequirementId       String?
+  sourceRequirementItemId   String?
+  productId                 String?
+  productCode               String?
+  productNameCn             String?
+  productNameEn             String?
+  categoryCode              String?
+  unitCode                  String?
+  purchaseQuantity          Decimal                 @db.Decimal(18, 4)
+  receivedQuantity          Decimal                 @default(0) @db.Decimal(18, 4)
+  unitPrice                 Decimal                 @db.Decimal(18, 4)
+  grossAmount               Decimal                 @default(0) @db.Decimal(18, 4)
+  discountAmount            Decimal                 @default(0) @db.Decimal(18, 4)
+  taxAmount                 Decimal                 @default(0) @db.Decimal(18, 4)
+  amount                    Decimal                 @default(0) @db.Decimal(18, 4)
+  currencyCode              String?
+  expectedDeliveryDate      DateTime?
+  status                    PurchaseOrderItemStatus @default(OPEN)
+  remark                    String?
+  extra                     Json?
+  sort                      Int                     @default(0)
+  createdAt                 DateTime                @default(now())
+  updatedAt                 DateTime                @updatedAt
+
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([purchaseOrderId])
+  @@index([sourceRequirementId])
+  @@index([sourceRequirementItemId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([status])
+}
