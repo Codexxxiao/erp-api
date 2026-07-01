@@ -34,6 +34,7 @@ import { InquiryModule } from './inquiry/inquiry.module';
 import { QuotationModule } from './quotation/quotation.module';
 import { ContractModule } from './contract/contract.module';
 import { SalesOrderModule } from './sales-order/sales-order.module';
+import { PurchaseRequirementModule } from './purchase-requirement/purchase-requirement.module';
 
 @Module({
   imports: [
@@ -70,6 +71,7 @@ import { SalesOrderModule } from './sales-order/sales-order.module';
     QuotationModule,
     ContractModule,
     SalesOrderModule,
+    PurchaseRequirementModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })

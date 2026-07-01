@@ -2125,3 +2125,104 @@ model SalesOrderItem {
   @@index([sourceQuotationItemId])
   @@index([productId])
 }
+
+enum PurchaseRequirementSourceType {
+  MANUAL
+  SALES_ORDER
+}
+
+enum PurchaseRequirementStatus {
+  DRAFT
+  OPEN
+  PARTIALLY_ORDERED
+  ORDERED
+  CLOSED
+  CANCELLED
+}
+
+enum PurchaseRequirementItemStatus {
+  OPEN
+  PARTIALLY_ORDERED
+  ORDERED
+  CLOSED
+  CANCELLED
+}
+
+enum PurchaseRequirementPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+model PurchaseRequirement {
+  id                 String                         @id @default(uuid())
+  tenantId           String
+  requirementNo      String
+  sourceType         PurchaseRequirementSourceType  @default(MANUAL)
+  sourceSalesOrderId String?
+  customerId         String?
+  customerName       String?
+  subject            String
+  status             PurchaseRequirementStatus      @default(OPEN)
+  priority           PurchaseRequirementPriority    @default(NORMAL)
+  requiredDate       DateTime?
+  ownerUserId        String?
+  closedAt           DateTime?
+  cancelledAt        DateTime?
+  remark             String?
+  extra              Json?
+  createdById        String
+  updatedById        String?
+  createdAt          DateTime                       @default(now())
+  updatedAt          DateTime                       @updatedAt
+
+  items PurchaseRequirementItem[]
+
+  @@unique([tenantId, requirementNo])
+  @@unique([tenantId, sourceSalesOrderId])
+  @@index([tenantId])
+  @@index([sourceSalesOrderId])
+  @@index([customerId])
+  @@index([status])
+  @@index([priority])
+  @@index([ownerUserId])
+  @@index([createdAt])
+}
+
+model PurchaseRequirementItem {
+  id                    String                        @id @default(uuid())
+  tenantId              String
+  requirementId         String
+  sourceSalesOrderItemId String?
+  productId             String?
+  productCode           String?
+  productNameCn         String?
+  productNameEn         String?
+  categoryCode          String?
+  unitCode              String?
+  requiredQuantity      Decimal                       @db.Decimal(18, 4)
+  orderedQuantity       Decimal                       @default(0) @db.Decimal(18, 4)
+  suggestedSupplierId   String?
+  suggestedSupplierName String?
+  targetPurchasePrice   Decimal?                      @db.Decimal(18, 4)
+  currencyCode          String?
+  requiredDate          DateTime?
+  status                PurchaseRequirementItemStatus @default(OPEN)
+  remark                String?
+  extra                 Json?
+  sort                  Int                           @default(0)
+  createdAt             DateTime                      @default(now())
+  updatedAt             DateTime                      @updatedAt
+
+  requirement PurchaseRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, sourceSalesOrderItemId])
+  @@index([tenantId])
+  @@index([requirementId])
+  @@index([sourceSalesOrderItemId])
+  @@index([productId])
+  @@index([productCode])
+  @@index([suggestedSupplierId])
+  @@index([status])
+}
