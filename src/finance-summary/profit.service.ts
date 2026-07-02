@@ -10,6 +10,7 @@ import {
   OutboundShipmentStatus,
   Prisma,
   PurchaseOrderStatus,
+  SalesOrder,
 } from '../generated/prisma/client';
 import type { CurrentUser } from '../common/types/current-user';
 import { requireTenantId } from '../common/tenant/tenant-scope';
@@ -22,6 +23,11 @@ type MoneyBucket = Map<string, Prisma.Decimal>;
 type MoneyByOrder = Map<string, MoneyBucket>;
 type ShareMap = Map<string, Prisma.Decimal>;
 type ShareBySource = Map<string, ShareMap>;
+type DecimalInput = Prisma.Decimal | number | string | null | undefined;
+type ResolvedRate = Awaited<
+  ReturnType<CurrencyRateService['resolveRateByTenant']>
+>;
+type ProfitRow = Record<string, unknown>;
 
 interface ExchangeRateInfo {
   fromCurrencyCode: string;
@@ -211,7 +217,7 @@ export class ProfitService {
 
   private async buildProfitRows(
     tenantId: string,
-    orders: any[],
+    orders: SalesOrder[],
     targetCurrencyCode?: string,
   ) {
     const orderIds = orders.map((item) => item.id);
@@ -259,7 +265,7 @@ export class ProfitService {
     const shipmentByOrder: MoneyByOrder = new Map();
     for (const item of shipments) {
       const currencyCode = this.normalizeCurrencyCode(
-        (item as any).currencyCode,
+        undefined,
         orderCurrencyMap.get(item.salesOrderId),
       );
       this.addMoney(
@@ -332,7 +338,7 @@ export class ProfitService {
       if (!orderId) continue;
 
       const currencyCode = this.normalizeCurrencyCode(
-        (item as any).purchaseOrder?.currencyCode,
+        item.currencyCode ?? item.purchaseOrder.currencyCode,
         orderCurrencyMap.get(orderId),
       );
 
@@ -351,7 +357,7 @@ export class ProfitService {
 
     const poIdList = Array.from(poIds);
 
-    const [receipts, receiptItems, payables] = await this.prisma.$transaction([
+    const [receipts, receiptItems] = await this.prisma.$transaction([
       poIdList.length
         ? this.prisma.inboundReceipt.findMany({
             where: {
@@ -375,21 +381,23 @@ export class ProfitService {
         : this.prisma.inboundReceiptItem.findMany({
             where: { id: { in: [] } },
           }),
-      poIdList.length
-        ? this.prisma.accountsPayable.findMany({
-            where: {
-              tenantId,
-              status: { not: AccountsPayableStatus.CANCELLED },
-              OR: [
-                { purchaseOrderId: { in: poIdList } },
-                { inboundReceiptId: { in: receipts.map((item) => item.id) } },
-              ],
-            },
-          })
-        : this.prisma.accountsPayable.findMany({
-            where: { id: { in: [] } },
-          }),
     ]);
+
+    const receiptIds = receipts.map((item) => item.id);
+    const payables = poIdList.length
+      ? await this.prisma.accountsPayable.findMany({
+          where: {
+            tenantId,
+            status: { not: AccountsPayableStatus.CANCELLED },
+            OR: [
+              { purchaseOrderId: { in: poIdList } },
+              ...(receiptIds.length > 0
+                ? [{ inboundReceiptId: { in: receiptIds } }]
+                : []),
+            ],
+          },
+        })
+      : [];
 
     const inboundCostByOrder: MoneyByOrder = new Map();
     const receiptCostByReceiptOrder: ShareBySource = new Map();
@@ -399,7 +407,7 @@ export class ProfitService {
       if (!orderId) continue;
 
       const currencyCode = this.normalizeCurrencyCode(
-        (item as any).receipt?.currencyCode,
+        item.currencyCode,
         poItemCurrency.get(item.purchaseOrderItemId),
       );
 
@@ -454,7 +462,7 @@ export class ProfitService {
       }
     }
 
-    const rateCache = new Map<string, any>();
+    const rateCache = new Map<string, ResolvedRate>();
 
     return Promise.all(
       orders.map(async (order) => {
@@ -481,7 +489,7 @@ export class ProfitService {
         const grossProfitAmount = salesAmount.minus(purchaseCostAmount);
         const cashProfitAmount = receivedAmount.minus(paidAmount);
 
-        const row: Record<string, unknown> = {
+        const row: ProfitRow = {
           salesOrderId: order.id,
           salesOrderNo: order.orderNo,
           customerId: order.customerId,
@@ -628,7 +636,7 @@ export class ProfitService {
     bucket: MoneyBucket | undefined,
     targetCurrencyCode: string,
     rateDate: Date,
-    rateCache: Map<string, any>,
+    rateCache: Map<string, ResolvedRate>,
     exchangeRates: ExchangeRateInfo[],
   ) {
     if (!bucket) return this.decimal(0);
@@ -658,7 +666,7 @@ export class ProfitService {
     fromCurrencyCode: string,
     toCurrencyCode: string,
     rateDate: Date,
-    cache: Map<string, any>,
+    cache: Map<string, ResolvedRate>,
   ) {
     const from = this.normalizeCurrencyCode(fromCurrencyCode);
     const to = this.normalizeCurrencyCode(toCurrencyCode);
@@ -682,7 +690,7 @@ export class ProfitService {
 
   private collectExchangeRate(
     exchangeRates: ExchangeRateInfo[],
-    resolved: any,
+    resolved: ResolvedRate,
   ) {
     const item: ExchangeRateInfo = {
       fromCurrencyCode: resolved.fromCurrencyCode,
@@ -710,7 +718,7 @@ export class ProfitService {
     map: MoneyByOrder,
     orderId: string,
     currencyCode: unknown,
-    amount: Prisma.Decimal.Value,
+    amount: DecimalInput,
   ) {
     const currency = this.normalizeCurrencyCode(currencyCode);
 
@@ -724,7 +732,7 @@ export class ProfitService {
     map: ShareBySource,
     sourceId: string,
     orderId: string,
-    amount: Prisma.Decimal.Value,
+    amount: DecimalInput,
   ) {
     if (!map.has(sourceId)) map.set(sourceId, new Map());
 
@@ -748,36 +756,30 @@ export class ProfitService {
     );
   }
 
-  private sumRows(rows: any[], key: string) {
+  private sumRows(rows: ProfitRow[], key: string) {
     return this.round(
       rows.reduce(
-        (sum, row) => sum.plus(this.decimal(row[key] ?? 0)),
+        (sum, row) => sum.plus(this.decimal((row[key] as DecimalInput) ?? 0)),
         this.decimal(0),
       ),
     );
   }
 
-  private sumDecimal(
-    current: Prisma.Decimal.Value | undefined,
-    amount: Prisma.Decimal.Value,
-  ) {
+  private sumDecimal(current: DecimalInput | undefined, amount: DecimalInput) {
     return this.decimal(current ?? 0).plus(this.decimal(amount));
   }
 
-  private decimal(value: Prisma.Decimal.Value) {
+  private decimal(value: DecimalInput) {
     return new Prisma.Decimal(value ?? 0);
   }
 
-  private rate(
-    numerator: Prisma.Decimal.Value,
-    denominator: Prisma.Decimal.Value,
-  ) {
+  private rate(numerator: DecimalInput, denominator: DecimalInput) {
     const base = this.decimal(denominator);
     if (base.eq(0)) return 0;
     return this.round(this.decimal(numerator).div(base).mul(100));
   }
 
-  private round(value: Prisma.Decimal.Value, scale = 4) {
+  private round(value: DecimalInput, scale = 4) {
     return Number(this.decimal(value).toDecimalPlaces(scale).toString());
   }
 
