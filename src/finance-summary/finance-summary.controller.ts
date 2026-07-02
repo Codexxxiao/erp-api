@@ -25,8 +25,13 @@ export class FinanceSummaryController {
   findSalesOrderProfit(
     @CurrentUserDecorator() user: CurrentUser,
     @Param('salesOrderId') salesOrderId: string,
+    @Query('targetCurrencyCode') targetCurrencyCode?: string,
   ) {
-    return this.profitService.findSalesOrderProfit(user, salesOrderId);
+    return this.profitService.findSalesOrderProfit(
+      user,
+      salesOrderId,
+      targetCurrencyCode,
+    );
   }
 
   @Get('profit/overview')
