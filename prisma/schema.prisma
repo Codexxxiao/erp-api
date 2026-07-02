@@ -2845,3 +2845,158 @@ model AccountsReceivablePaymentAllocation {
   @@index([paymentId])
   @@index([receivableId])
 }
+
+enum AccountsPayableSourceType {
+  MANUAL
+  PURCHASE_ORDER
+  INBOUND_RECEIPT
+}
+
+enum AccountsPayableStatus {
+  DRAFT
+  CONFIRMED
+  PARTIALLY_PAID
+  PAID
+  CLOSED
+  CANCELLED
+}
+
+enum AccountsPayablePaymentStatus {
+  DRAFT
+  CONFIRMED
+  CANCELLED
+}
+
+enum AccountsPayablePaymentMethod {
+  BANK_TRANSFER
+  CASH
+  CHECK
+  ALIPAY
+  WECHAT
+  OTHER
+}
+
+model AccountsPayable {
+  id                String                    @id @default(uuid())
+  tenantId          String
+  payableNo         String
+  sourceType        AccountsPayableSourceType @default(MANUAL)
+  sourceId          String?
+  sourceNo          String?
+  purchaseOrderId   String?
+  inboundReceiptId  String?
+  supplierId        String?
+  supplierName      String?
+  subject           String
+  status            AccountsPayableStatus     @default(DRAFT)
+  currencyCode      String
+  exchangeRate      Decimal?                  @db.Decimal(18, 6)
+  totalAmount       Decimal                   @default(0) @db.Decimal(18, 4)
+  paidAmount        Decimal                   @default(0) @db.Decimal(18, 4)
+  outstandingAmount Decimal                   @default(0) @db.Decimal(18, 4)
+  dueDate           DateTime?
+  confirmedAt       DateTime?
+  closedAt          DateTime?
+  cancelledAt       DateTime?
+  remark            String?
+  extra             Json?
+  createdById       String
+  updatedById       String?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+
+  items       AccountsPayableItem[]
+  allocations AccountsPayablePaymentAllocation[]
+
+  @@unique([tenantId, payableNo])
+  @@index([tenantId])
+  @@index([sourceType, sourceId])
+  @@index([purchaseOrderId])
+  @@index([inboundReceiptId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model AccountsPayableItem {
+  id            String   @id @default(uuid())
+  tenantId      String
+  payableId     String
+  sourceItemId  String?
+  productId     String?
+  productCode   String?
+  productNameCn String?
+  productNameEn String?
+  categoryCode  String?
+  unitCode      String?
+  quantity      Decimal  @db.Decimal(18, 4)
+  unitPrice     Decimal  @db.Decimal(18, 4)
+  amount        Decimal  @default(0) @db.Decimal(18, 4)
+  currencyCode  String?
+  remark        String?
+  extra         Json?
+  sort          Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  payable AccountsPayable @relation(fields: [payableId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([payableId])
+  @@index([sourceItemId])
+  @@index([productId])
+  @@index([productCode])
+}
+
+model AccountsPayablePayment {
+  id              String                       @id @default(uuid())
+  tenantId        String
+  paymentNo       String
+  supplierId      String?
+  supplierName    String?
+  status          AccountsPayablePaymentStatus @default(DRAFT)
+  paymentDate     DateTime?
+  method          AccountsPayablePaymentMethod @default(BANK_TRANSFER)
+  bankAccountNo   String?
+  transactionNo   String?
+  currencyCode    String
+  amount          Decimal                      @db.Decimal(18, 4)
+  allocatedAmount Decimal                      @default(0) @db.Decimal(18, 4)
+  unappliedAmount Decimal                      @default(0) @db.Decimal(18, 4)
+  confirmedAt     DateTime?
+  cancelledAt     DateTime?
+  remark          String?
+  extra           Json?
+  createdById     String
+  updatedById     String?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+
+  allocations AccountsPayablePaymentAllocation[]
+
+  @@unique([tenantId, paymentNo])
+  @@index([tenantId])
+  @@index([supplierId])
+  @@index([status])
+  @@index([paymentDate])
+  @@index([createdAt])
+}
+
+model AccountsPayablePaymentAllocation {
+  id           String   @id @default(uuid())
+  tenantId     String
+  paymentId    String
+  payableId    String
+  amount       Decimal  @db.Decimal(18, 4)
+  currencyCode String
+  remark       String?
+  createdAt    DateTime @default(now())
+
+  payment AccountsPayablePayment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  payable AccountsPayable        @relation(fields: [payableId], references: [id], onDelete: Cascade)
+
+  @@unique([paymentId, payableId])
+  @@index([tenantId])
+  @@index([paymentId])
+  @@index([payableId])
+}
