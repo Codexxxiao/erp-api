@@ -22,40 +22,40 @@ model Tenant {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  users        User[]
-  invites      UserInvite[]
-  roles        Role[]
-  menus        Menu[]
-  dictionaries Dictionary[]
-  dataSources  DataSource[]
-  forms        FormDefinition[]
-  formRecords  FormRecord[]
-  formVersions FormVersion[]
+  users               User[]
+  invites             UserInvite[]
+  roles               Role[]
+  menus               Menu[]
+  dictionaries        Dictionary[]
+  dataSources         DataSource[]
+  forms               FormDefinition[]
+  formRecords         FormRecord[]
+  formVersions        FormVersion[]
   workflowDefinitions WorkflowDefinition[]
-  messages         Message[]
-  messageTemplates MessageTemplate[]
-  messageRecipients MessageRecipient[]
-  listViews ListView[]
+  messages            Message[]
+  messageTemplates    MessageTemplate[]
+  messageRecipients   MessageRecipient[]
+  listViews           ListView[]
 }
 
 model User {
-  id                 String         @id @default(uuid())
+  id                 String             @id @default(uuid())
   tenantId           String?
-  identity           String         @unique
+  identity           String             @unique
   username           String
   passwordHash       String
   nickname           String?
-  isPlatformAdmin    Boolean        @default(false)
-  isTenantAdmin      Boolean        @default(false)
-  isActive           Boolean        @default(true)
-  mustChangePassword Boolean        @default(false) // 新增：首次登录强制改密
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
-  tenant             Tenant?        @relation(fields: [tenantId], references: [id])
+  isPlatformAdmin    Boolean            @default(false)
+  isTenantAdmin      Boolean            @default(false)
+  isActive           Boolean            @default(true)
+  mustChangePassword Boolean            @default(false) // 新增：首次登录强制改密
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  tenant             Tenant?            @relation(fields: [tenantId], references: [id])
   refreshTokens      RefreshToken[]
-  invitesSent        UserInvite[]   @relation("InviteCreator")
-  invitesAccepted    UserInvite[]   @relation("InviteAcceptor")
-  messageRecipients MessageRecipient[] @relation("MessageRecipientUser")
+  invitesSent        UserInvite[]       @relation("InviteCreator")
+  invitesAccepted    UserInvite[]       @relation("InviteAcceptor")
+  messageRecipients  MessageRecipient[] @relation("MessageRecipientUser")
 
   userRoles UserRole[]
 
@@ -351,9 +351,9 @@ model FormDefinition {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
-  tenant  Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  tables  FormTable[]
-  records FormRecord[]
+  tenant   Tenant?       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tables   FormTable[]
+  records  FormRecord[]
   versions FormVersion[]
 
   @@unique([scopeKey, code])
@@ -422,20 +422,20 @@ enum FormRecordStatus {
 }
 
 model FormRecord {
-  id          String           @id @default(uuid())
-  tenantId    String
-  formId      String
-  formCode    String
-  recordNo    String
-  status      FormRecordStatus @default(DRAFT)
-  mainData    Json
-  createdById String
-  updatedById String?
-  submittedAt DateTime?
-  canceledAt  DateTime?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  formVersion   Int     @default(1)
+  id            String           @id @default(uuid())
+  tenantId      String
+  formId        String
+  formCode      String
+  recordNo      String
+  status        FormRecordStatus @default(DRAFT)
+  mainData      Json
+  createdById   String
+  updatedById   String?
+  submittedAt   DateTime?
+  canceledAt    DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  formVersion   Int              @default(1)
   formVersionId String?
 
   tenant         Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -469,7 +469,6 @@ model FormRecordDetail {
   @@index([tableCode])
 }
 
-
 enum PhysicalSchemaStatus {
   DRAFT
   SYNCED
@@ -477,17 +476,17 @@ enum PhysicalSchemaStatus {
 }
 
 model FormPhysicalTable {
-  id          String               @id @default(uuid())
-  tenantId    String
-  formId      String
-  tableId     String
-  formVersion Int
-  tableCode   String
-  tableName   String
-  status      PhysicalSchemaStatus @default(DRAFT)
-  lastError   String?
-  createdAt   DateTime             @default(now())
-  updatedAt   DateTime             @updatedAt
+  id            String               @id @default(uuid())
+  tenantId      String
+  formId        String
+  tableId       String
+  formVersion   Int
+  tableCode     String
+  tableName     String
+  status        PhysicalSchemaStatus @default(DRAFT)
+  lastError     String?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
   formVersionId String?
 
   columns FormPhysicalColumn[]
@@ -523,7 +522,6 @@ model FormPhysicalColumn {
   @@index([fieldId])
 }
 
-
 enum DocumentFlowDirection {
   PUSH_DOWN
   IMPORT
@@ -558,19 +556,19 @@ enum DocumentFlowLinkStatus {
 }
 
 model DocumentFlow {
-  id           String                @id @default(uuid())
+  id           String                   @id @default(uuid())
   tenantId     String
   code         String
   name         String
   direction    DocumentFlowDirection
   sourceFormId String
   targetFormId String
-  status       DocumentFlowStatus    @default(DRAFT)
+  status       DocumentFlowStatus       @default(DRAFT)
   repeatPolicy DocumentFlowRepeatPolicy @default(BLOCK)
   description  String?
   config       Json?
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
 
   mappings   DocumentFlowMapping[]
   executions DocumentFlowExecution[]
@@ -654,7 +652,6 @@ model DocumentFlowExecution {
   @@index([targetRecordId])
 }
 
-
 enum FormVersionStatus {
   PUBLISHED
   DEPRECATED
@@ -674,8 +671,8 @@ model FormVersion {
 
   records        FormRecord[]
   physicalTables FormPhysicalTable[]
-  tenant Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  form   FormDefinition @relation(fields: [formId], references: [id], onDelete: Cascade)
+  tenant         Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  form           FormDefinition      @relation(fields: [formId], references: [id], onDelete: Cascade)
 
   @@unique([formId, version])
   @@unique([tenantId, formCode, version])
@@ -741,7 +738,7 @@ model WorkflowDefinition {
   createdAt     DateTime                 @default(now())
   updatedAt     DateTime                 @updatedAt
 
-  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   nodes       WorkflowNode[]
   transitions WorkflowTransition[]
   instances   WorkflowInstance[]
@@ -761,13 +758,13 @@ model WorkflowNode {
   approverType   WorkflowApproverType?
   approverUserId String?
   approverRoleId String?
-  approveMode    WorkflowApproveMode  @default(ANY)
+  approveMode    WorkflowApproveMode   @default(ANY)
   sort           Int                   @default(0)
   config         Json?
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
 
-  definition       WorkflowDefinition  @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  definition       WorkflowDefinition   @relation(fields: [definitionId], references: [id], onDelete: Cascade)
   outgoing         WorkflowTransition[] @relation("WorkflowTransitionSource")
   incoming         WorkflowTransition[] @relation("WorkflowTransitionTarget")
   tasks            WorkflowTask[]
@@ -810,8 +807,8 @@ model WorkflowInstance {
   createdAt     DateTime               @default(now())
   updatedAt     DateTime               @updatedAt
 
-  definition  WorkflowDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict)
-  currentNode WorkflowNode?      @relation("WorkflowCurrentNode", fields: [currentNodeId], references: [id], onDelete: SetNull)
+  definition  WorkflowDefinition  @relation(fields: [definitionId], references: [id], onDelete: Restrict)
+  currentNode WorkflowNode?       @relation("WorkflowCurrentNode", fields: [currentNodeId], references: [id], onDelete: SetNull)
   tasks       WorkflowTask[]
   logs        WorkflowActionLog[]
 
@@ -834,8 +831,8 @@ model WorkflowTask {
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 
-  instance WorkflowInstance @relation(fields: [instanceId], references: [id], onDelete: Cascade)
-  node     WorkflowNode     @relation(fields: [nodeId], references: [id], onDelete: Restrict)
+  instance WorkflowInstance    @relation(fields: [instanceId], references: [id], onDelete: Cascade)
+  node     WorkflowNode        @relation(fields: [nodeId], references: [id], onDelete: Restrict)
   logs     WorkflowActionLog[]
 
   @@index([tenantId])
@@ -864,7 +861,6 @@ model WorkflowActionLog {
   @@index([taskId])
   @@index([userId])
 }
-
 
 enum MessageType {
   SYSTEM
@@ -956,7 +952,6 @@ model MessageTemplate {
   @@index([scopeKey])
   @@index([code])
 }
-
 
 enum ListViewStatus {
   DRAFT
@@ -1189,18 +1184,18 @@ enum PackageInstallLogLevel {
 }
 
 model PackageInstall {
-  id              String                       @id @default(uuid())
-  tenantId        String
+  id               String                       @id @default(uuid())
+  tenantId         String
   packageVersionId String
-  status          PackageInstallStatus         @default(INSTALLING)
-  conflictPolicy  PackageInstallConflictPolicy @default(FAIL)
-  installedById   String?
-  startedAt       DateTime                     @default(now())
-  finishedAt      DateTime?
-  error           String?
-  summary         Json?
-  createdAt       DateTime                     @default(now())
-  updatedAt       DateTime                     @updatedAt
+  status           PackageInstallStatus         @default(INSTALLING)
+  conflictPolicy   PackageInstallConflictPolicy @default(FAIL)
+  installedById    String?
+  startedAt        DateTime                     @default(now())
+  finishedAt       DateTime?
+  error            String?
+  summary          Json?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
 
   assets PackageInstallAsset[]
   logs   PackageInstallLog[]
@@ -1212,7 +1207,7 @@ model PackageInstall {
 }
 
 model PackageInstallAsset {
-  id             String                    @id @default(uuid())
+  id             String                     @id @default(uuid())
   installId      String
   packageAssetId String?
   type           PackageAssetType
@@ -1222,8 +1217,8 @@ model PackageInstallAsset {
   status         PackageInstallAssetStatus
   action         PackageInstallAssetAction?
   error          String?
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
+  createdAt      DateTime                   @default(now())
+  updatedAt      DateTime                   @updatedAt
 
   install PackageInstall @relation(fields: [installId], references: [id], onDelete: Cascade)
 
@@ -1248,7 +1243,6 @@ model PackageInstallLog {
   @@index([level])
   @@index([createdAt])
 }
-
 
 model PackageTenantVersion {
   id               String                     @id @default(uuid())
@@ -1342,7 +1336,6 @@ model PackageUpgradeLog {
   @@index([createdAt])
 }
 
-
 enum FileObjectStatus {
   ACTIVE
   DELETED
@@ -1412,26 +1405,26 @@ enum ImportTaskRowStatus {
 }
 
 model ImportTask {
-  id          String           @id @default(uuid())
-  tenantId    String
-  formId      String?
-  formCode    String
-  fileId      String
-  templateId String?
-  sheetName   String?
-  headerRow   Int              @default(1)
-  dataStartRow Int             @default(2)
-  status      ImportTaskStatus @default(CREATED)
-  mapping     Json?
-  preview     Json?
-  totalRows   Int              @default(0)
-  successRows Int              @default(0)
-  failedRows  Int              @default(0)
-  error       String?
-  createdById String
-  executedAt  DateTime?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+  id           String           @id @default(uuid())
+  tenantId     String
+  formId       String?
+  formCode     String
+  fileId       String
+  templateId   String?
+  sheetName    String?
+  headerRow    Int              @default(1)
+  dataStartRow Int              @default(2)
+  status       ImportTaskStatus @default(CREATED)
+  mapping      Json?
+  preview      Json?
+  totalRows    Int              @default(0)
+  successRows  Int              @default(0)
+  failedRows   Int              @default(0)
+  error        String?
+  createdById  String
+  executedAt   DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
 
   rows ImportTaskRow[]
 
@@ -1521,8 +1514,8 @@ model Customer {
   extra       Json?
   createdById String
   updatedById String?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
 
   contacts  CustomerContact[]
   followUps CustomerFollowUp[]
@@ -1565,18 +1558,18 @@ model CustomerContact {
 }
 
 model CustomerFollowUp {
-  id          String   @id @default(uuid())
-  tenantId    String
-  customerId  String
-  typeCode    String
-  content     String
-  followedAt  DateTime @default(now())
+  id           String    @id @default(uuid())
+  tenantId     String
+  customerId   String
+  typeCode     String
+  content      String
+  followedAt   DateTime  @default(now())
   nextFollowAt DateTime?
-  extra       Json?
-  createdById String
-  updatedById String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  extra        Json?
+  createdById  String
+  updatedById  String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -1639,7 +1632,7 @@ model ProductSupplierQuote {
   tenantId           String
   productId          String
   supplierCustomerId String?
-  supplierId   String?
+  supplierId         String?
   supplierName       String?
   currencyCode       String
   purchasePrice      Decimal                    @db.Decimal(18, 4)
@@ -1653,11 +1646,9 @@ model ProductSupplierQuote {
   updatedById        String?
   createdAt          DateTime                   @default(now())
   updatedAt          DateTime                   @updatedAt
-  
 
-
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  supplier     Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  product  Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
 
   @@index([tenantId])
   @@index([productId])
@@ -1683,21 +1674,21 @@ enum SupplierType {
 }
 
 model Supplier {
-  id                 String         @id @default(uuid())
-  tenantId           String
-  code               String
-  name               String
-  shortName           String?
-  type               SupplierType   @default(TRADING_COMPANY)
-  status             SupplierStatus @default(ACTIVE)
+  id        String         @id @default(uuid())
+  tenantId  String
+  code      String
+  name      String
+  shortName String?
+  type      SupplierType   @default(TRADING_COMPANY)
+  status    SupplierStatus @default(ACTIVE)
 
-  countryRegion      String?
-  province           String?
-  city               String?
-  address            String?
-  website            String?
-  email              String?
-  phone              String?
+  countryRegion String?
+  province      String?
+  city          String?
+  address       String?
+  website       String?
+  email         String?
+  phone         String?
 
   source             String?
   level              String?
@@ -1707,14 +1698,14 @@ model Supplier {
   tags               Json?
   remark             String?
 
-  createdById        String
-  updatedById        String?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  createdById String
+  updatedById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  contacts           SupplierContact[]
-  followUps          SupplierFollowUp[]
-  productQuotes      ProductSupplierQuote[]
+  contacts      SupplierContact[]
+  followUps     SupplierFollowUp[]
+  productQuotes ProductSupplierQuote[]
 
   @@unique([tenantId, code])
   @@index([tenantId])
@@ -1723,40 +1714,40 @@ model Supplier {
 }
 
 model SupplierContact {
-  id          String   @id @default(uuid())
-  tenantId    String
-  supplierId  String
-  name        String
-  title       String?
-  email       String?
-  phone       String?
-  mobile      String?
-  whatsapp    String?
-  wechat      String?
-  skype       String?
-  isPrimary   Boolean  @default(false)
-  sort        Int      @default(0)
-  remark      String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(uuid())
+  tenantId   String
+  supplierId String
+  name       String
+  title      String?
+  email      String?
+  phone      String?
+  mobile     String?
+  whatsapp   String?
+  wechat     String?
+  skype      String?
+  isPrimary  Boolean  @default(false)
+  sort       Int      @default(0)
+  remark     String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  supplier    Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, supplierId])
   @@index([tenantId, isPrimary])
 }
 
 model SupplierFollowUp {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   tenantId     String
   supplierId   String
   type         String?
   content      String
   nextFollowAt DateTime?
   createdById  String
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
 
-  supplier     Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplier Supplier @relation(fields: [supplierId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, supplierId])
   @@index([tenantId, createdAt])
@@ -1820,7 +1811,7 @@ model Inquiry {
 }
 
 model InquiryItem {
-  id                   String   @id @default(uuid())
+  id                   String    @id @default(uuid())
   tenantId             String
   inquiryId            String
   productId            String?
@@ -1829,15 +1820,15 @@ model InquiryItem {
   productNameEn        String?
   categoryCode         String?
   unitCode             String?
-  quantity             Decimal  @db.Decimal(18, 4)
-  targetPrice          Decimal? @db.Decimal(18, 4)
+  quantity             Decimal   @db.Decimal(18, 4)
+  targetPrice          Decimal?  @db.Decimal(18, 4)
   currencyCode         String?
   expectedDeliveryDate DateTime?
   remark               String?
   extra                Json?
-  sort                 Int      @default(0)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  sort                 Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   inquiry Inquiry @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
 
@@ -1904,7 +1895,7 @@ model Quotation {
 }
 
 model QuotationItem {
-  id                   String   @id @default(uuid())
+  id                   String    @id @default(uuid())
   tenantId             String
   quotationId          String
   sourceInquiryItemId  String?
@@ -1915,21 +1906,21 @@ model QuotationItem {
   categoryCode         String?
   unitCode             String?
   description          String?
-  quantity             Decimal  @db.Decimal(18, 4)
-  unitPrice            Decimal  @db.Decimal(18, 4)
-  grossAmount          Decimal  @default(0) @db.Decimal(18, 4)
-  discountRate         Decimal? @db.Decimal(8, 4)
-  discountAmount       Decimal  @default(0) @db.Decimal(18, 4)
-  taxRate              Decimal? @db.Decimal(8, 4)
-  taxAmount            Decimal  @default(0) @db.Decimal(18, 4)
-  amount               Decimal  @default(0) @db.Decimal(18, 4)
+  quantity             Decimal   @db.Decimal(18, 4)
+  unitPrice            Decimal   @db.Decimal(18, 4)
+  grossAmount          Decimal   @default(0) @db.Decimal(18, 4)
+  discountRate         Decimal?  @db.Decimal(8, 4)
+  discountAmount       Decimal   @default(0) @db.Decimal(18, 4)
+  taxRate              Decimal?  @db.Decimal(8, 4)
+  taxAmount            Decimal   @default(0) @db.Decimal(18, 4)
+  amount               Decimal   @default(0) @db.Decimal(18, 4)
   currencyCode         String?
   expectedDeliveryDate DateTime?
   remark               String?
   extra                Json?
-  sort                 Int      @default(0)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  sort                 Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   quotation Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
 
@@ -1959,39 +1950,39 @@ enum SalesOrderStatus {
 }
 
 model SalesContract {
-  id                  String              @id @default(uuid())
-  tenantId            String
-  contractNo          String
-  quotationId         String?
-  customerId          String?
-  customerName        String?
-  customerContactId   String?
-  customerContactName String?
-  subject             String
-  status              SalesContractStatus @default(DRAFT)
-  currencyCode        String
-  exchangeRate        Decimal?            @db.Decimal(18, 6)
-  tradeTerm           String?
-  paymentTerm         String?
-  signDate            DateTime?
-  effectiveDate       DateTime?
+  id                   String              @id @default(uuid())
+  tenantId             String
+  contractNo           String
+  quotationId          String?
+  customerId           String?
+  customerName         String?
+  customerContactId    String?
+  customerContactName  String?
+  subject              String
+  status               SalesContractStatus @default(DRAFT)
+  currencyCode         String
+  exchangeRate         Decimal?            @db.Decimal(18, 6)
+  tradeTerm            String?
+  paymentTerm          String?
+  signDate             DateTime?
+  effectiveDate        DateTime?
   expectedDeliveryDate DateTime?
-  ownerUserId         String?
-  confirmedAt         DateTime?
-  completedAt         DateTime?
-  cancelledAt         DateTime?
-  subtotalAmount      Decimal             @default(0) @db.Decimal(18, 4)
-  discountAmount      Decimal             @default(0) @db.Decimal(18, 4)
-  taxAmount           Decimal             @default(0) @db.Decimal(18, 4)
-  freightAmount       Decimal             @default(0) @db.Decimal(18, 4)
-  otherAmount         Decimal             @default(0) @db.Decimal(18, 4)
-  totalAmount         Decimal             @default(0) @db.Decimal(18, 4)
-  remark              String?
-  extra               Json?
-  createdById         String
-  updatedById         String?
-  createdAt           DateTime            @default(now())
-  updatedAt           DateTime            @updatedAt
+  ownerUserId          String?
+  confirmedAt          DateTime?
+  completedAt          DateTime?
+  cancelledAt          DateTime?
+  subtotalAmount       Decimal             @default(0) @db.Decimal(18, 4)
+  discountAmount       Decimal             @default(0) @db.Decimal(18, 4)
+  taxAmount            Decimal             @default(0) @db.Decimal(18, 4)
+  freightAmount        Decimal             @default(0) @db.Decimal(18, 4)
+  otherAmount          Decimal             @default(0) @db.Decimal(18, 4)
+  totalAmount          Decimal             @default(0) @db.Decimal(18, 4)
+  remark               String?
+  extra                Json?
+  createdById          String
+  updatedById          String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
 
   items       SalesContractItem[]
   salesOrders SalesOrder[]
@@ -2006,32 +1997,32 @@ model SalesContract {
 }
 
 model SalesContractItem {
-  id                   String   @id @default(uuid())
-  tenantId             String
-  contractId           String
+  id                    String    @id @default(uuid())
+  tenantId              String
+  contractId            String
   sourceQuotationItemId String?
-  productId            String?
-  productCode          String?
-  productNameCn        String?
-  productNameEn        String?
-  categoryCode         String?
-  unitCode             String?
-  description          String?
-  quantity             Decimal  @db.Decimal(18, 4)
-  unitPrice            Decimal  @db.Decimal(18, 4)
-  grossAmount          Decimal  @default(0) @db.Decimal(18, 4)
-  discountRate         Decimal? @db.Decimal(8, 4)
-  discountAmount       Decimal  @default(0) @db.Decimal(18, 4)
-  taxRate              Decimal? @db.Decimal(8, 4)
-  taxAmount            Decimal  @default(0) @db.Decimal(18, 4)
-  amount               Decimal  @default(0) @db.Decimal(18, 4)
-  currencyCode         String?
-  expectedDeliveryDate DateTime?
-  remark               String?
-  extra                Json?
-  sort                 Int      @default(0)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  productId             String?
+  productCode           String?
+  productNameCn         String?
+  productNameEn         String?
+  categoryCode          String?
+  unitCode              String?
+  description           String?
+  quantity              Decimal   @db.Decimal(18, 4)
+  unitPrice             Decimal   @db.Decimal(18, 4)
+  grossAmount           Decimal   @default(0) @db.Decimal(18, 4)
+  discountRate          Decimal?  @db.Decimal(8, 4)
+  discountAmount        Decimal   @default(0) @db.Decimal(18, 4)
+  taxRate               Decimal?  @db.Decimal(8, 4)
+  taxAmount             Decimal   @default(0) @db.Decimal(18, 4)
+  amount                Decimal   @default(0) @db.Decimal(18, 4)
+  currencyCode          String?
+  expectedDeliveryDate  DateTime?
+  remark                String?
+  extra                 Json?
+  sort                  Int       @default(0)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   contract SalesContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
 
@@ -2077,7 +2068,7 @@ model SalesOrder {
   createdAt            DateTime         @default(now())
   updatedAt            DateTime         @updatedAt
 
-  contract SalesContract? @relation(fields: [contractId], references: [id], onDelete: SetNull)
+  contract SalesContract?   @relation(fields: [contractId], references: [id], onDelete: SetNull)
   items    SalesOrderItem[]
 
   @@unique([tenantId, orderNo])
@@ -2091,31 +2082,31 @@ model SalesOrder {
 }
 
 model SalesOrderItem {
-  id                   String   @id @default(uuid())
-  tenantId             String
-  orderId              String
-  sourceContractItemId String?
+  id                    String    @id @default(uuid())
+  tenantId              String
+  orderId               String
+  sourceContractItemId  String?
   sourceQuotationItemId String?
-  productId            String?
-  productCode          String?
-  productNameCn        String?
-  productNameEn        String?
-  categoryCode         String?
-  unitCode             String?
-  orderedQuantity      Decimal  @db.Decimal(18, 4)
-  shippedQuantity      Decimal  @default(0) @db.Decimal(18, 4)
-  unitPrice            Decimal  @db.Decimal(18, 4)
-  grossAmount          Decimal  @default(0) @db.Decimal(18, 4)
-  discountAmount       Decimal  @default(0) @db.Decimal(18, 4)
-  taxAmount            Decimal  @default(0) @db.Decimal(18, 4)
-  amount               Decimal  @default(0) @db.Decimal(18, 4)
-  currencyCode         String?
-  expectedDeliveryDate DateTime?
-  remark               String?
-  extra                Json?
-  sort                 Int      @default(0)
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  productId             String?
+  productCode           String?
+  productNameCn         String?
+  productNameEn         String?
+  categoryCode          String?
+  unitCode              String?
+  orderedQuantity       Decimal   @db.Decimal(18, 4)
+  shippedQuantity       Decimal   @default(0) @db.Decimal(18, 4)
+  unitPrice             Decimal   @db.Decimal(18, 4)
+  grossAmount           Decimal   @default(0) @db.Decimal(18, 4)
+  discountAmount        Decimal   @default(0) @db.Decimal(18, 4)
+  taxAmount             Decimal   @default(0) @db.Decimal(18, 4)
+  amount                Decimal   @default(0) @db.Decimal(18, 4)
+  currencyCode          String?
+  expectedDeliveryDate  DateTime?
+  remark                String?
+  extra                 Json?
+  sort                  Int       @default(0)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   order SalesOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
@@ -2156,16 +2147,16 @@ enum PurchaseRequirementPriority {
 }
 
 model PurchaseRequirement {
-  id                 String                         @id @default(uuid())
+  id                 String                        @id @default(uuid())
   tenantId           String
   requirementNo      String
-  sourceType         PurchaseRequirementSourceType  @default(MANUAL)
+  sourceType         PurchaseRequirementSourceType @default(MANUAL)
   sourceSalesOrderId String?
   customerId         String?
   customerName       String?
   subject            String
-  status             PurchaseRequirementStatus      @default(OPEN)
-  priority           PurchaseRequirementPriority    @default(NORMAL)
+  status             PurchaseRequirementStatus     @default(OPEN)
+  priority           PurchaseRequirementPriority   @default(NORMAL)
   requiredDate       DateTime?
   ownerUserId        String?
   closedAt           DateTime?
@@ -2174,8 +2165,8 @@ model PurchaseRequirement {
   extra              Json?
   createdById        String
   updatedById        String?
-  createdAt          DateTime                       @default(now())
-  updatedAt          DateTime                       @updatedAt
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
 
   items PurchaseRequirementItem[]
 
@@ -2191,29 +2182,29 @@ model PurchaseRequirement {
 }
 
 model PurchaseRequirementItem {
-  id                    String                        @id @default(uuid())
-  tenantId              String
-  requirementId         String
+  id                     String                        @id @default(uuid())
+  tenantId               String
+  requirementId          String
   sourceSalesOrderItemId String?
-  productId             String?
-  productCode           String?
-  productNameCn         String?
-  productNameEn         String?
-  categoryCode          String?
-  unitCode              String?
-  requiredQuantity      Decimal                       @db.Decimal(18, 4)
-  orderedQuantity       Decimal                       @default(0) @db.Decimal(18, 4)
-  suggestedSupplierId   String?
-  suggestedSupplierName String?
-  targetPurchasePrice   Decimal?                      @db.Decimal(18, 4)
-  currencyCode          String?
-  requiredDate          DateTime?
-  status                PurchaseRequirementItemStatus @default(OPEN)
-  remark                String?
-  extra                 Json?
-  sort                  Int                           @default(0)
-  createdAt             DateTime                      @default(now())
-  updatedAt             DateTime                      @updatedAt
+  productId              String?
+  productCode            String?
+  productNameCn          String?
+  productNameEn          String?
+  categoryCode           String?
+  unitCode               String?
+  requiredQuantity       Decimal                       @db.Decimal(18, 4)
+  orderedQuantity        Decimal                       @default(0) @db.Decimal(18, 4)
+  suggestedSupplierId    String?
+  suggestedSupplierName  String?
+  targetPurchasePrice    Decimal?                      @db.Decimal(18, 4)
+  currencyCode           String?
+  requiredDate           DateTime?
+  status                 PurchaseRequirementItemStatus @default(OPEN)
+  remark                 String?
+  extra                  Json?
+  sort                   Int                           @default(0)
+  createdAt              DateTime                      @default(now())
+  updatedAt              DateTime                      @updatedAt
 
   requirement PurchaseRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
 
@@ -2291,32 +2282,32 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderItem {
-  id                       String                  @id @default(uuid())
-  tenantId                 String
-  purchaseOrderId           String
-  sourceRequirementId       String?
-  sourceRequirementItemId   String?
-  productId                 String?
-  productCode               String?
-  productNameCn             String?
-  productNameEn             String?
-  categoryCode              String?
-  unitCode                  String?
-  purchaseQuantity          Decimal                 @db.Decimal(18, 4)
-  receivedQuantity          Decimal                 @default(0) @db.Decimal(18, 4)
-  unitPrice                 Decimal                 @db.Decimal(18, 4)
-  grossAmount               Decimal                 @default(0) @db.Decimal(18, 4)
-  discountAmount            Decimal                 @default(0) @db.Decimal(18, 4)
-  taxAmount                 Decimal                 @default(0) @db.Decimal(18, 4)
-  amount                    Decimal                 @default(0) @db.Decimal(18, 4)
-  currencyCode              String?
-  expectedDeliveryDate      DateTime?
-  status                    PurchaseOrderItemStatus @default(OPEN)
-  remark                    String?
-  extra                     Json?
-  sort                      Int                     @default(0)
-  createdAt                 DateTime                @default(now())
-  updatedAt                 DateTime                @updatedAt
+  id                      String                  @id @default(uuid())
+  tenantId                String
+  purchaseOrderId         String
+  sourceRequirementId     String?
+  sourceRequirementItemId String?
+  productId               String?
+  productCode             String?
+  productNameCn           String?
+  productNameEn           String?
+  categoryCode            String?
+  unitCode                String?
+  purchaseQuantity        Decimal                 @db.Decimal(18, 4)
+  receivedQuantity        Decimal                 @default(0) @db.Decimal(18, 4)
+  unitPrice               Decimal                 @db.Decimal(18, 4)
+  grossAmount             Decimal                 @default(0) @db.Decimal(18, 4)
+  discountAmount          Decimal                 @default(0) @db.Decimal(18, 4)
+  taxAmount               Decimal                 @default(0) @db.Decimal(18, 4)
+  amount                  Decimal                 @default(0) @db.Decimal(18, 4)
+  currencyCode            String?
+  expectedDeliveryDate    DateTime?
+  status                  PurchaseOrderItemStatus @default(OPEN)
+  remark                  String?
+  extra                   Json?
+  sort                    Int                     @default(0)
+  createdAt               DateTime                @default(now())
+  updatedAt               DateTime                @updatedAt
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
@@ -2344,8 +2335,8 @@ model InboundReceipt {
   id                     String               @id @default(uuid())
   tenantId               String
   receiptNo              String
-  purchaseOrderId         String
-  purchaseOrderNo         String?
+  purchaseOrderId        String
+  purchaseOrderNo        String?
   supplierId             String?
   supplierName           String?
   status                 InboundReceiptStatus @default(DRAFT)
@@ -2423,7 +2414,6 @@ enum InventoryDirection {
   OUT
 }
 
-
 enum InventoryAdjustmentType {
   INCREASE
   DECREASE
@@ -2457,7 +2447,7 @@ model Warehouse {
 }
 
 model InventoryBalance {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   tenantId          String
   stockKey          String
   productId         String?
@@ -2467,14 +2457,14 @@ model InventoryBalance {
   categoryCode      String?
   unitCode          String?
   warehouseCode     String
-  locationCode      String   @default("")
-  batchNo           String   @default("")
-  quantity          Decimal  @default(0) @db.Decimal(18, 4)
-  lockedQuantity    Decimal  @default(0) @db.Decimal(18, 4)
-  availableQuantity Decimal  @default(0) @db.Decimal(18, 4)
+  locationCode      String    @default("")
+  batchNo           String    @default("")
+  quantity          Decimal   @default(0) @db.Decimal(18, 4)
+  lockedQuantity    Decimal   @default(0) @db.Decimal(18, 4)
+  availableQuantity Decimal   @default(0) @db.Decimal(18, 4)
   lastTransactionAt DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@unique([tenantId, stockKey])
   @@index([tenantId])
@@ -2529,23 +2519,23 @@ model InventoryTransaction {
 }
 
 model InventoryAdjustment {
-  id             String                    @id @default(uuid())
-  tenantId       String
-  adjustmentNo   String
-  type           InventoryAdjustmentType
-  status         InventoryAdjustmentStatus @default(DRAFT)
-  warehouseCode  String?
-  reasonCode     String?
-  adjustedAt     DateTime?
-  confirmedAt    DateTime?
-  cancelledAt    DateTime?
-  totalQuantity  Decimal                   @default(0) @db.Decimal(18, 4)
-  remark         String?
-  extra          Json?
-  createdById    String
-  updatedById    String?
-  createdAt      DateTime                  @default(now())
-  updatedAt      DateTime                  @updatedAt
+  id            String                    @id @default(uuid())
+  tenantId      String
+  adjustmentNo  String
+  type          InventoryAdjustmentType
+  status        InventoryAdjustmentStatus @default(DRAFT)
+  warehouseCode String?
+  reasonCode    String?
+  adjustedAt    DateTime?
+  confirmedAt   DateTime?
+  cancelledAt   DateTime?
+  totalQuantity Decimal                   @default(0) @db.Decimal(18, 4)
+  remark        String?
+  extra         Json?
+  createdById   String
+  updatedById   String?
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
 
   items InventoryAdjustmentItem[]
 
@@ -2557,27 +2547,27 @@ model InventoryAdjustment {
 }
 
 model InventoryAdjustmentItem {
-  id             String   @id @default(uuid())
-  tenantId       String
-  adjustmentId   String
-  productId      String?
-  productCode    String
-  productNameCn  String?
-  productNameEn  String?
-  categoryCode   String?
-  unitCode       String?
-  warehouseCode  String
-  locationCode   String   @default("")
-  batchNo        String   @default("")
-  quantity       Decimal  @db.Decimal(18, 4)
-  unitCost       Decimal? @db.Decimal(18, 4)
-  amount         Decimal? @db.Decimal(18, 4)
-  currencyCode   String?
-  remark         String?
-  extra          Json?
-  sort           Int      @default(0)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  id            String   @id @default(uuid())
+  tenantId      String
+  adjustmentId  String
+  productId     String?
+  productCode   String
+  productNameCn String?
+  productNameEn String?
+  categoryCode  String?
+  unitCode      String?
+  warehouseCode String
+  locationCode  String   @default("")
+  batchNo       String   @default("")
+  quantity      Decimal  @db.Decimal(18, 4)
+  unitCost      Decimal? @db.Decimal(18, 4)
+  amount        Decimal? @db.Decimal(18, 4)
+  currencyCode  String?
+  remark        String?
+  extra         Json?
+  sort          Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   adjustment InventoryAdjustment @relation(fields: [adjustmentId], references: [id], onDelete: Cascade)
 
@@ -2656,29 +2646,29 @@ model OutboundShipment {
 }
 
 model OutboundShipmentItem {
-  id                String                     @id @default(uuid())
-  tenantId          String
-  shipmentId        String
-  salesOrderItemId  String
-  productId         String?
-  productCode       String?
-  productNameCn     String?
-  productNameEn     String?
-  categoryCode      String?
-  unitCode          String?
-  warehouseCode     String
-  locationCode      String                     @default("")
-  batchNo           String                     @default("")
-  shippedQuantity   Decimal                    @db.Decimal(18, 4)
-  unitPrice         Decimal?                   @db.Decimal(18, 4)
-  amount            Decimal                    @default(0) @db.Decimal(18, 4)
-  currencyCode      String?
-  status            OutboundShipmentItemStatus @default(NORMAL)
-  remark            String?
-  extra             Json?
-  sort              Int                        @default(0)
-  createdAt         DateTime                   @default(now())
-  updatedAt         DateTime                   @updatedAt
+  id               String                     @id @default(uuid())
+  tenantId         String
+  shipmentId       String
+  salesOrderItemId String
+  productId        String?
+  productCode      String?
+  productNameCn    String?
+  productNameEn    String?
+  categoryCode     String?
+  unitCode         String?
+  warehouseCode    String
+  locationCode     String                     @default("")
+  batchNo          String                     @default("")
+  shippedQuantity  Decimal                    @db.Decimal(18, 4)
+  unitPrice        Decimal?                   @db.Decimal(18, 4)
+  amount           Decimal                    @default(0) @db.Decimal(18, 4)
+  currencyCode     String?
+  status           OutboundShipmentItemStatus @default(NORMAL)
+  remark           String?
+  extra            Json?
+  sort             Int                        @default(0)
+  createdAt        DateTime                   @default(now())
+  updatedAt        DateTime                   @updatedAt
 
   shipment OutboundShipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
@@ -2999,4 +2989,37 @@ model AccountsPayablePaymentAllocation {
   @@index([tenantId])
   @@index([paymentId])
   @@index([payableId])
+}
+
+enum CurrencyRateSource {
+  MANUAL
+  IMPORT
+  SYSTEM
+}
+
+enum CurrencyRateStatus {
+  ENABLED
+  DISABLED
+}
+
+model CurrencyRate {
+  id               String             @id @default(uuid())
+  tenantId         String
+  fromCurrencyCode String             @db.VarChar(16)
+  toCurrencyCode   String             @db.VarChar(16)
+  rate             Decimal            @db.Decimal(20, 12)
+  rateDate         DateTime           @db.Date
+  source           CurrencyRateSource @default(MANUAL)
+  status           CurrencyRateStatus @default(ENABLED)
+  remark           String?
+  createdById      String?
+  updatedById      String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([tenantId, fromCurrencyCode, toCurrencyCode, rateDate])
+  @@index([tenantId, fromCurrencyCode, toCurrencyCode, rateDate])
+  @@index([tenantId, toCurrencyCode, rateDate])
+  @@index([tenantId, rateDate])
+  @@map("currency_rates")
 }
