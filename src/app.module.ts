@@ -42,6 +42,7 @@ import { OutboundShipmentModule } from './outbound-shipment/outbound-shipment.mo
 import { AccountsReceivableModule } from './accounts-receivable/accounts-receivable.module';
 import { AccountsPayableModule } from './accounts-payable/accounts-payable.module';
 import { FinanceSummaryModule } from './finance-summary/finance-summary.module';
+import { CurrencyRateModule } from './currency-rate/currency-rate.module';
 
 @Module({
   imports: [
@@ -86,6 +87,7 @@ import { FinanceSummaryModule } from './finance-summary/finance-summary.module';
     AccountsReceivableModule,
     AccountsPayableModule,
     FinanceSummaryModule,
+    CurrencyRateModule,
   ],
   providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }],
 })
